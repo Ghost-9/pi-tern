@@ -11,7 +11,9 @@ daemon relay.
 | `index.ts` | extension factory: probe lifecycle, Phase A features, tools, `/tern` command |
 | `lib/tsp.ts` | TSP v1 framing/parsing, `hello` encode, DA1 detection |
 | `lib/tern.ts` | Tern detection (`TERM_PROGRAM`), `tern` CLI runner, scratch dir |
-| `lib/relay.ts` | daemon relay client: `u32LE + JSON`, `hello`/`welcome`, answer unwrap |
+| `lib/relay.ts` | daemon relay client: one reconnecting connection, `u32LE + JSON` framing, request queue, `hello`/`welcome`, answer unwrap, idle close |
+| `lib/events.ts` | `tern events` stream: line parsing, filters, `waitForEvent` |
+| `lib/state.ts` | persisted state: mirror preference, last pinned diagram, control endpoint |
 | `lib/browser.ts` | browser op validation, relay-first with CLI fallback |
 | `lib/diagram.ts` | write a Markdown file, open it in a Tern file block (merman), pin support |
 | `lib/ctl.ts` | pane capture, control-endpoint commands, pane listing |
@@ -56,6 +58,19 @@ sequenceDiagram
 - **Session mirror**: opt-in; renders finalized messages and tool events into
   `~/.pi/agent/scratch/pi-tern/session-mirror.md` (capped at ~200 KB) and opens it once as a file
   block. `/tern mirror open` re-focuses it.
+
+## Events, control and restore
+
+- **Events**: `tern_watch` starts one `tern events` child, parses JSON lines and resolves on the
+  first match (`pane_exited` by default, optional pane filter, timeout). The stream is stopped when
+  the call settles; nothing runs in the background.
+- **Control**: `/tern control [window|headless]` spawns a detached Tern window (default) or
+  `tern serve` bound to a socket under the scratch directory, waits until it answers and stores the
+  endpoint in `state.json`. `tern_ctl` resolves an explicit override, then the stored endpoint, then
+  `TERN_WINDOW_SOCKET`.
+- **Restore**: `/tern mirror on|off` and pinned diagrams write to `state.json`; `/tern restore`
+  reopens the mirror and the last pinned diagram. On session start the mirror restarts when
+  `PI_TERN_MIRROR=1` or the persisted preference says it was on.
 
 ## What the extension deliberately does not do
 

@@ -31,3 +31,9 @@ pi --extension ./index.ts
 - Keep the diff focused; one feature or fix per PR.
 - Update `CHANGELOG.md` and the README status table when behavior changes.
 - CI must pass (`node --test test/protocol.test.ts` on Node 24).
+
+## Releases
+
+Push a `v*` tag. `.github/workflows/release.yml` runs the protocol tests and publishes to npm
+when an `NPM_TOKEN` secret or npm trusted publishing is configured; otherwise the publish step is
+skipped.

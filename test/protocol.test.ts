@@ -2,7 +2,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
+import { createServer } from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { asHello, encodeHello, extractTspMessages } from "../lib/tsp.ts";
+import { eventName, parseEventLine } from "../lib/events.ts";
+import { encodeFrame, RelayClient } from "../lib/relay.ts";
 import { extractMermaids, messageText, renderMessageMarkdown, summarizeArgs } from "../lib/text.ts";
 import { writeDiagram } from "../lib/diagram.ts";
 
@@ -94,4 +99,56 @@ test("pinned diagrams keep one stable path", () => {
 	const second = writeDiagram("flowchart LR; A-->B", "pi-tern test", true);
 	assert.equal(first.path, second.path);
 	rmSync(first.path, { force: true });
+});
+
+test("parses tern event lines", () => {
+	assert.deepEqual(parseEventLine('{"event":"pane_exited","pane":42,"status":0}'), {
+		event: "pane_exited",
+		pane: 42,
+		status: 0,
+	});
+	assert.equal(parseEventLine("not json"), null);
+	assert.equal(parseEventLine(""), null);
+	assert.equal(eventName({ event: "pane_spawned" }), "pane_spawned");
+	assert.equal(eventName({ kind: "cli" }), "cli");
+});
+
+test("relay client reuses one connection and unwraps answers", async () => {
+	const socketPath = path.join(os.tmpdir(), `ptr-${process.pid}.sock`);
+	rmSync(socketPath, { force: true });
+	let connections = 0;
+	let ops = 0;
+	const server = createServer((socket) => {
+		connections++;
+		let buffer = Buffer.alloc(0);
+		socket.on("data", (chunk: Buffer) => {
+			buffer = Buffer.concat([buffer, chunk]);
+			for (;;) {
+				if (buffer.length < 4) return;
+				const size = buffer.readUInt32LE(0);
+				if (buffer.length < 4 + size) return;
+				const frame = JSON.parse(buffer.subarray(4, 4 + size).toString("utf8"));
+				buffer = buffer.subarray(4 + size);
+				if (frame.hello) {
+					socket.write(encodeFrame({ welcome: {} }));
+					continue;
+				}
+				ops++;
+				socket.write(encodeFrame({ id: frame.id, browser: { ok: { op: frame.browser.op, n: ops } } }));
+			}
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+	try {
+		const client = new RelayClient(socketPath);
+		const first = await client.request({ op: "state" });
+		const second = await client.request({ op: "eval" });
+		assert.equal(connections, 1, "one connection for two ops");
+		assert.deepEqual(first, { ok: { op: "state", n: 1 } });
+		assert.deepEqual(second, { ok: { op: "eval", n: 2 } });
+		client.close();
+	} finally {
+		server.close();
+		rmSync(socketPath, { force: true });
+	}
 });

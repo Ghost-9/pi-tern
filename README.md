@@ -27,6 +27,10 @@ It never writes TSP frames, so pi's renderer is not disturbed. Native Tern surfa
 | Session mirror | stable | `/tern mirror on` writes this conversation to `session-mirror.md` and opens it as a Tern block; Mermaid inside it renders natively |
 | Tern browser | stable | `tern_browser` drives Tern's WKWebView picture-in-picture: `open`, `state`, `snapshot`, `act`, `eval`, `capture` (returns an image), `input`, `goto`, `nav`, `events`, `close` |
 | Pane inspection | stable | `tern_capture` (text, ANSI, HTML, scrollback, surfaces), `tern_panes`, `tern_ctl` |
+| Pane events | stable | `tern_watch` waits for daemon events (`pane_exited`, …) with an optional pane filter, so pi can wait for a test run or server instead of polling |
+| Diagnostics | stable | `tern_diagnose` and `/tern diagnose`: environment, probe, relay round trip, control endpoint, persisted state |
+| Control endpoint | stable | `/tern control [window|headless]` starts a Tern window or headless session with a control socket; `tern_ctl` uses it automatically |
+| Restore | stable | `/tern restore` reopens the session mirror and the last pinned diagram; state survives Tern/pi restarts |
 | Live tab title | stable | `π <model> · <context> · <dir>`, refreshed after startup and on every turn |
 | Attention bell | opt-in | `PI_TERN_BELL=1` rings Tern's bell when pi finishes a turn |
 | Native Tern surfaces | not included | Tern owning the transcript/composer/dock requires pi core changes |
@@ -69,6 +73,9 @@ Commands:
 
 ```
 /tern doctor                  probe result, hello kinds, features, credits
+/tern diagnose                environment, relay and control diagnostics
+/tern restore                 reopen the mirror and the last pinned diagram
+/tern control [window|headless]  start a control endpoint for tern_ctl
 /tern diagram <mermaid>       render a diagram through Tern's merman engine
 /tern diagram --last [--pin]  render the newest Mermaid fence in the conversation
 /tern mirror on|off|open      mirror the conversation into a Markdown block
@@ -78,7 +85,7 @@ Commands:
 /tern title | bell            apply the title, or ring the bell once
 ```
 
-Model-callable tools: `tern_status`, `tern_diagram`, `tern_browser`, `tern_capture`, `tern_panes`, `tern_ctl`, `tern_mirror`.
+Model-callable tools: `tern_status`, `tern_diagram`, `tern_browser`, `tern_capture`, `tern_panes`, `tern_ctl`, `tern_mirror`, `tern_watch`, `tern_diagnose`.
 
 Examples:
 
@@ -129,7 +136,7 @@ Three channels, kept separate:
 - **Tern's agent layer is omp-keyed.** `cx.agents:transcript` reads the `omp.session` surface and returns `{}` for non-omp programs; the Agent chip, Carly transcripts and prompt injection are therefore unavailable.
 - **Tern file blocks are not panes.** `tern capture` cannot read a file block back (`no such pane in this session daemon`), so diagram rendering is verified visually.
 - **Browser capture needs a rendered picture-in-picture.** Tern answers `capture: a 0×0 px image is out of range` while the PiP is not visible (window or tab not frontmost).
-- **`tern_ctl` needs a control endpoint.** Launch Tern with `--control EP` or set `TERN_WINDOW_SOCKET`.
+- **`tern_ctl` needs a control endpoint.** Run `/tern control` (headless by default) or launch Tern with `--control EP` / set `TERN_WINDOW_SOCKET`.
 
 ## Security
 

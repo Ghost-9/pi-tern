@@ -1,16 +1,19 @@
 /**
- * Tern daemon relay client — the channel omp uses for its Tern browser PiP.
- * Unix socket at $TERN_PANE_SOCKET, frames = u32LE length + UTF-8 JSON.
- * Greet {"hello":{}} -> {"welcome":{}}; then {"id":N,"browser":OP} -> {"id":N,"browser":ANSWER}.
+ * Tern daemon relay client.
+ *
+ * One persistent connection with a request queue: frames are `u32LE length + UTF-8 JSON`.
+ * Greet `{"hello":{}}` -> `{"welcome":{}}`; then `{"id":N,"browser":OP}` -> `{"id":N,"browser":ANSWER}`.
  */
 import net from "node:net";
 
 export class FrameReader {
 	private buffer = Buffer.alloc(0);
 	private frames: unknown[] = [];
-	private waiters: Array<(v: unknown) => void> = [];
+	private waiters: Array<{ resolve: (v: unknown) => void; reject: (e: Error) => void }> = [];
+	private closed: Error | undefined;
 
 	feed(chunk: Buffer): void {
+		if (this.closed) return;
 		this.buffer = Buffer.concat([this.buffer, chunk]);
 		for (;;) {
 			if (this.buffer.length < 4) return;
@@ -26,25 +29,37 @@ export class FrameReader {
 				continue;
 			}
 			const waiter = this.waiters.shift();
-			if (waiter) waiter(parsed);
+			if (waiter) waiter.resolve(parsed);
 			else this.frames.push(parsed);
 		}
 	}
 
 	next(timeoutMs: number): Promise<unknown> {
 		if (this.frames.length > 0) return Promise.resolve(this.frames.shift());
+		if (this.closed) return Promise.reject(this.closed);
 		return new Promise((resolve, reject) => {
+			const waiter = { resolve, reject };
 			const timer = setTimeout(() => {
-				const i = this.waiters.indexOf(waiter);
-				if (i >= 0) this.waiters.splice(i, 1);
+				const index = this.waiters.indexOf(waiter);
+				if (index >= 0) this.waiters.splice(index, 1);
 				reject(new Error("relay timeout"));
 			}, timeoutMs);
-			const waiter = (v: unknown) => {
+			timer.unref?.();
+			waiter.resolve = (value: unknown) => {
 				clearTimeout(timer);
-				resolve(v);
+				resolve(value);
+			};
+			waiter.reject = (error: Error) => {
+				clearTimeout(timer);
+				reject(error);
 			};
 			this.waiters.push(waiter);
 		});
+	}
+
+	close(error: Error): void {
+		this.closed = this.closed ?? error;
+		for (const waiter of this.waiters.splice(0)) waiter.reject(error);
 	}
 }
 
@@ -55,42 +70,178 @@ export function encodeFrame(obj: unknown): Buffer {
 	return Buffer.concat([head, body]);
 }
 
+export class RelayClient {
+	private socket: net.Socket | undefined;
+	private reader = new FrameReader();
+	private connecting: Promise<void> | undefined;
+	private nextId = 1;
+	private idleTimer: ReturnType<typeof setTimeout> | undefined;
+	private pending = new Map<
+		number,
+		{ resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
+	>();
+
+	private readonly socketPath: string;
+
+	constructor(socketPath: string) {
+		this.socketPath = socketPath;
+	}
+
+	get connected(): boolean {
+		return this.socket !== undefined && this.socket.destroyed === false;
+	}
+
+	private async connect(timeoutMs: number): Promise<void> {
+		if (this.connected) return;
+		if (this.connecting) return this.connecting;
+		this.reader = new FrameReader();
+		this.connecting = new Promise<void>((resolve, reject) => {
+			const socket = net.connect(this.socketPath);
+			const onEarlyError = (error: Error) => reject(error);
+			socket.once("error", onEarlyError);
+			socket.once("connect", () => {
+				socket.off("error", onEarlyError);
+				socket.on("error", (error) => this.teardown(error));
+				socket.on("close", () => this.teardown(new Error("relay connection closed")));
+				socket.on("data", (chunk: Buffer) => {
+					try {
+						this.reader.feed(chunk);
+					} catch (error) {
+						this.teardown(error as Error);
+					}
+				});
+				// Ref'd for connect + request; request() unrefs once nothing is pending.
+				this.socket = socket;
+				socket.write(encodeFrame({ hello: {} }));
+				this.reader
+					.next(timeoutMs)
+					.then(() => {
+						void this.pump();
+						resolve();
+					})
+					.catch((error: Error) => {
+						this.teardown(error);
+						reject(error);
+					});
+			});
+		}).finally(() => {
+			this.connecting = undefined;
+		});
+		return this.connecting;
+	}
+
+	private async pump(): Promise<void> {
+		for (;;) {
+			let frame: unknown;
+			try {
+				frame = await this.reader.next(24 * 60 * 60 * 1000);
+			} catch {
+				return;
+			}
+			const message = frame as { id?: number; browser?: unknown };
+			if (typeof message?.id !== "number") continue;
+			const waiter = this.pending.get(message.id);
+			if (!waiter) continue;
+			clearTimeout(waiter.timer);
+			this.pending.delete(message.id);
+			// The daemon wraps answers: {"id":N,"browser":ANSWER}.
+			waiter.resolve(message.browser ?? frame);
+		}
+	}
+
+	private teardown(error: Error): void {
+		this.socket?.destroy();
+		this.socket = undefined;
+		this.reader.close(error);
+		for (const [, waiter] of this.pending) {
+			clearTimeout(waiter.timer);
+			waiter.reject(error);
+		}
+		this.pending.clear();
+	}
+
+	async request(op: Record<string, unknown>, timeoutMs = 15000): Promise<unknown> {
+		await this.connect(timeoutMs);
+		const socket = this.socket;
+		if (!socket) throw new Error("relay not connected");
+		const id = this.nextId++;
+		const response = new Promise<unknown>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.pending.delete(id);
+				reject(new Error("relay timeout"));
+			}, timeoutMs);
+			timer.unref?.();
+			this.pending.set(id, { resolve, reject, timer });
+		});
+		socket.ref?.();
+		socket.write(encodeFrame({ id, browser: op }));
+		try {
+			return await response;
+		} finally {
+			if (this.pending.size === 0) socket.unref?.();
+			this.touchIdle();
+		}
+	}
+
+	/** Close the connection after a quiet period so nothing holds the process open. */
+	private touchIdle(idleMs = 30_000): void {
+		if (this.idleTimer) clearTimeout(this.idleTimer);
+		this.idleTimer = setTimeout(() => {
+			if (this.pending.size === 0) this.close();
+		}, idleMs);
+		this.idleTimer.unref?.();
+	}
+
+	close(): void {
+		if (this.idleTimer) {
+			clearTimeout(this.idleTimer);
+			this.idleTimer = undefined;
+		}
+		const socket = this.socket;
+		this.socket = undefined;
+		this.reader.close(new Error("relay client closed"));
+		socket?.end();
+		socket?.destroy();
+	}
+}
+
+const clients = new Map<string, RelayClient>();
+
 /** Relay can be disabled with PI_TERN_RELAY=0 (the CLI fallback is then used). */
 export function browserRelayAvailable(): boolean {
 	return process.env.PI_TERN_RELAY !== "0";
 }
 
-/**
- * One relay round trip: connect, greet, send one browser op, read its answer.
- * The answer is the raw JSON the daemon returns ({"ok":…} or {"error":…}).
- */
+/** One browser op over a cached, reconnecting relay connection. */
 export async function relayBrowser(
 	socketPath: string,
 	op: Record<string, unknown>,
 	timeoutMs = 15000,
 ): Promise<unknown> {
-	const socket = net.connect(socketPath);
-	const reader = new FrameReader();
-	socket.on("data", (chunk: Buffer) => {
-		try {
-			reader.feed(chunk);
-		} catch {
-			socket.destroy();
-		}
-	});
-	await new Promise<void>((resolve, reject) => {
-		socket.once("connect", () => resolve());
-		socket.once("error", reject);
-	});
+	let client = clients.get(socketPath);
+	if (!client) {
+		client = new RelayClient(socketPath);
+		clients.set(socketPath, client);
+	}
 	try {
-		socket.write(encodeFrame({ hello: {} }));
-		await reader.next(timeoutMs);
-		socket.write(encodeFrame({ id: 1, browser: op }));
-		const frame = (await reader.next(timeoutMs)) as { browser?: unknown } | null;
-		// The daemon answers {"id":N,"browser":ANSWER}; unwrap it.
-		return frame && typeof frame === "object" && "browser" in frame ? frame.browser : frame;
+		return await client.request(op, timeoutMs);
+	} catch (error) {
+		client.close();
+		clients.delete(socketPath);
+		throw error;
+	}
+}
+
+/** Connect, greet, disconnect: proves the relay works and measures the round trip. */
+export async function relayPing(socketPath: string, timeoutMs = 5000): Promise<{ ok: boolean; ms: number; error?: string }> {
+	const started = Date.now();
+	const client = new RelayClient(socketPath);
+	try {
+		await client.request({ op: "state", block: 0 }, timeoutMs).catch(() => undefined);
+		return { ok: true, ms: Date.now() - started };
+	} catch (error) {
+		return { ok: false, ms: Date.now() - started, error: error instanceof Error ? error.message : String(error) };
 	} finally {
-		socket.end();
-		socket.destroy();
+		client.close();
 	}
 }

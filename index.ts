@@ -30,13 +30,16 @@ import path from "node:path";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { browserOp } from "./lib/browser.ts";
-import { capturePane, controlCommand, listPanes } from "./lib/ctl.ts";
+import { bootstrapControl, capturePane, controlCommand, listPanes } from "./lib/ctl.ts";
 import { openDiagram, writeDiagram, type DiagramPlacement } from "./lib/diagram.ts";
-import { readTernEnv, runTern, scratchDir } from "./lib/tern.ts";
+import { waitForEvent } from "./lib/events.ts";
+import { relayPing } from "./lib/relay.ts";
+import { loadState, saveState } from "./lib/state.ts";
+import { readTernEnv, runTern, scratchDir, type TernEnv } from "./lib/tern.ts";
 import { extractMermaids, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
 import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, type TspHello } from "./lib/tsp.ts";
 
-const PI_TERN_VERSION = "0.1.1";
+const PI_TERN_VERSION = "0.2.0";
 
 interface ProbeState {
 	status: "idle" | "pending" | "confirmed" | "absent" | "timeout";
@@ -56,6 +59,8 @@ let mirrorEnabled = process.env.PI_TERN_MIRROR === "1";
 let mirrorLines: string[] = [];
 let mirrorTimer: ReturnType<typeof setTimeout> | undefined;
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function describeProbe(): string {
 	const env = readTernEnv();
 	const lines = [
@@ -64,6 +69,7 @@ function describeProbe(): string {
 		`window control: ${env.windowSocket ?? "(none — launch Tern with --control for tern_ctl)"}`,
 		`TSP probe: ${probe.status}`,
 		`title updates: ${process.env.PI_TERN_TITLE === "0" ? "off" : "on"}  bell: ${process.env.PI_TERN_BELL === "1" ? "on" : "off"}  mirror: ${mirrorEnabled ? "on" : "off"}`,
+		`control endpoint: ${loadState().control ?? env.windowSocket ?? "(none — /tern control starts one)"}`,
 		`last mermaid: ${lastMermaid ? `${lastMermaid.source.length} chars, ${Math.round((Date.now() - lastMermaid.at) / 1000)}s ago` : "none"}`,
 	];
 	if (probe.hello) {
@@ -172,6 +178,7 @@ function hashText(text: string): string {
 
 function openMermaid(source: string, title: string, pin = false): Promise<{ path: string }> {
 	const written = writeDiagram(source, title, pin);
+	if (pin) saveState({ lastDiagram: written.path });
 	return openDiagram(written.path, "split").then(() => ({ path: written.path }));
 }
 
@@ -221,6 +228,7 @@ function flushMirror(): void {
 
 function startMirror(ctx: any): void {
 	mirrorEnabled = true;
+	saveState({ mirror: { enabled: true } });
 	if (mirrorLines.length === 0) {
 		mirrorLines = ["# π session mirror", "", `_${process.cwd()} · ${new Date().toISOString()}_`, ""];
 		try {
@@ -244,13 +252,53 @@ function asText(text: string) {
 	return { content: [{ type: "text" as const, text }], details: undefined };
 }
 
+/**
+ * Capture a browser screenshot with bounded retries: wait for the page to finish
+ * loading, then retry on the WebView's 0x0 failure until the deadline.
+ */
+async function captureWithRetry(
+	env: TernEnv,
+	block: number | undefined,
+	timeoutMs: number,
+): Promise<Awaited<ReturnType<typeof browserOp>>> {
+	if (block === undefined) throw new Error("browser capture needs a block id (open a page first or pass block)");
+	const deadline = Date.now() + timeoutMs;
+	let lastError: Error | undefined;
+	while (Date.now() < deadline) {
+		try {
+			const state = await browserOp(env, { op: "state", block }, 5000);
+			if ((state.ok as { loading?: boolean } | undefined)?.loading !== false) {
+				await sleep(300);
+				continue;
+			}
+			const answer = await browserOp(env, { op: "capture", block }, Math.max(2000, Math.min(8000, deadline - Date.now())));
+			if ((answer.ok as { data?: string } | undefined)?.data) return answer;
+			lastError = new Error("capture returned no image data");
+		} catch (error) {
+			lastError = error instanceof Error ? error : new Error(String(error));
+		}
+		await sleep(400);
+	}
+	const message = lastError?.message ?? "capture timed out";
+	if (message.includes("0×0")) {
+		throw new Error(
+			`${message} — Tern's picture-in-picture must be rendered; bring the Tern window or tab that hosts it to the front and retry`,
+		);
+	}
+	throw new Error(`capture failed: ${message}`);
+}
+
 export default function piTern(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event: unknown, ctx: any) => {
 		registerProbe(ctx);
 		updateTitle(ctx);
 		// pi writes its own startup title; re-apply ours once it has settled.
 		setTimeout(() => updateTitle(ctx), 3000);
-		if (mirrorEnabled) startMirror(ctx);
+		const persisted = loadState();
+		if (process.env.PI_TERN_MIRROR === "1" || persisted.mirror?.enabled) {
+			if (!mirrorEnabled) startMirror(ctx);
+			else void openDiagram(mirrorFile(), "split").catch(() => undefined);
+		}
 	});
 
 	pi.on("message_end", async (event: any) => {
@@ -370,19 +418,10 @@ export default function piTern(pi: ExtensionAPI) {
 			if (params.keys !== undefined) raw.keys = params.keys;
 			if (params.script !== undefined) raw.script = params.script;
 			const timeout = (params.timeoutSeconds ?? 20) * 1000;
-			let answer: Awaited<ReturnType<typeof browserOp>>;
-			try {
-				answer = await browserOp(env, raw, timeout);
-				if (params.op === "capture" && !(answer.ok as { data?: string } | undefined)?.data) {
-					await new Promise((resolve) => setTimeout(resolve, 1000));
-					answer = await browserOp(env, raw, timeout);
-				}
-			} catch (error) {
-				if (params.op !== "capture") throw error;
-				// A capture can land before the first paint; retry once.
-				await new Promise((resolve) => setTimeout(resolve, 1200));
-				answer = await browserOp(env, raw, timeout);
-			}
+			const answer =
+				params.op === "capture"
+					? await captureWithRetry(env, (raw.block as number | undefined) ?? lastBrowserBlock, timeout)
+					: await browserOp(env, raw, timeout);
 			const ok = answer.ok as { block?: number; data?: string; mime?: string; width?: number; height?: number } | undefined;
 			if (ok && typeof ok.block === "number") lastBrowserBlock = ok.block;
 			// A capture is an image: hand pi the PNG (and keep a copy on disk).
@@ -455,7 +494,8 @@ export default function piTern(pi: ExtensionAPI) {
 			control: Type.Optional(Type.String({ description: "Control endpoint override" })),
 		}),
 		async execute(_id, params) {
-			return asText(await controlCommand(readTernEnv(), params.command, params.control));
+			const env = readTernEnv();
+			return asText(await controlCommand(env, params.command, params.control ?? loadState().control ?? env.windowSocket));
 		},
 	});
 
@@ -475,6 +515,7 @@ export default function piTern(pi: ExtensionAPI) {
 				case "off":
 					flushMirror();
 					mirrorEnabled = false;
+					saveState({ mirror: { enabled: false } });
 					return asText("session mirror off");
 				case "open": {
 					await openDiagram(mirrorFile(), "split").catch(() => {
@@ -491,6 +532,73 @@ export default function piTern(pi: ExtensionAPI) {
 		},
 	});
 
+	const watchTool = defineTool({
+		name: "tern_watch",
+		label: "Tern watch",
+		description:
+			"Wait for the next Tern daemon event (default pane_exited) with an optional pane filter, and return it. Use to wait for a command, test run or server in another pane instead of polling.",
+		parameters: Type.Object({
+			events: Type.Optional(Type.String({ description: "Comma-separated event names, default pane_exited" })),
+			pane: Type.Optional(Type.Number({ description: "Only events for this pane/block id" })),
+			timeoutSeconds: Type.Optional(Type.Number({ description: "Default 120" })),
+		}),
+		async execute(_id, params) {
+			const names = new Set(
+				(params.events ?? "pane_exited")
+					.split(",")
+					.map((name) => name.trim())
+					.filter(Boolean),
+			);
+			const timeoutMs = Math.max(1000, (params.timeoutSeconds ?? 120) * 1000);
+			const { event, timedOut } = await waitForEvent({
+				timeoutMs,
+				match: (candidate) => {
+					const name = String((candidate as { event?: unknown }).event ?? "");
+					if (names.size > 0 && !names.has(name)) return false;
+					if (params.pane !== undefined && Number((candidate as { pane?: unknown }).pane) !== params.pane) return false;
+					return true;
+				},
+			});
+			if (timedOut) return asText(JSON.stringify({ timedOut: true, waitedMs: timeoutMs }));
+			return asText(JSON.stringify(event, null, 2));
+		},
+	});
+
+	const diagnoseTool = defineTool({
+		name: "tern_diagnose",
+		label: "Tern diagnose",
+		description:
+			"Collect Tern integration diagnostics: environment, TSP probe, relay round trip, control endpoint, persisted state and versions.",
+		parameters: Type.Object({}),
+		async execute() {
+			const env = readTernEnv();
+			const version = await runTern(["--version"], 5000);
+			const relay = env.paneSocket ? await relayPing(env.paneSocket, 5000) : undefined;
+			return asText(
+				JSON.stringify(
+					{
+						version: PI_TERN_VERSION,
+						env,
+						probe: {
+							status: probe.status,
+							hello: probe.hello
+								? { v: probe.hello.v, ver: probe.hello.ver, kinds: probe.hello.kinds.length, features: probe.hello.features }
+								: null,
+						},
+						tern: version?.stdout.trim() ?? null,
+						relay,
+						control: loadState().control ?? env.windowSocket ?? null,
+						state: loadState(),
+						mirror: { enabled: mirrorEnabled, path: mirrorFile() },
+						lastMermaid: lastMermaid ? { at: lastMermaid.at, chars: lastMermaid.source.length } : null,
+					},
+					null,
+					2,
+				),
+			);
+		},
+	});
+
 	pi.registerTool(statusTool);
 	pi.registerTool(diagramTool);
 	pi.registerTool(browserTool);
@@ -498,12 +606,14 @@ export default function piTern(pi: ExtensionAPI) {
 	pi.registerTool(panesTool);
 	pi.registerTool(ctlTool);
 	pi.registerTool(mirrorTool);
+	pi.registerTool(watchTool);
+	pi.registerTool(diagnoseTool);
 
 	// ── Command ────────────────────────────────────────────────────────────
 
 	pi.registerCommand("tern", {
 		description:
-			"Tern integration: status | title | bell | diagram [--last] [--pin] <mermaid> | mirror on|off|open|status | browser <json> | capture [block] | panes",
+			"Tern integration: status | diagnose | restore | control [window|headless] | title | bell | diagram [--last] [--pin] <mermaid> | mirror on|off|open|status | browser <json> | capture [block] | panes",
 		handler: async (args: string, ctx: any) => {
 			const trimmed = (args ?? "").trim();
 			const [sub = "status"] = trimmed.split(/\s+/);
@@ -512,6 +622,61 @@ export default function piTern(pi: ExtensionAPI) {
 					case "status":
 					case "doctor": {
 						ctx.ui.notify(describeProbe(), "info");
+						return;
+					}
+					case "diagnose": {
+						const env = readTernEnv();
+						const version = await runTern(["--version"], 5000);
+						const relay = env.paneSocket ? await relayPing(env.paneSocket, 5000) : undefined;
+						ctx.ui.notify(
+							JSON.stringify(
+								{
+									version: PI_TERN_VERSION,
+									env,
+									probe: probe.status,
+									tern: version.stdout.trim(),
+									relay,
+									control: loadState().control ?? null,
+									state: loadState(),
+									mirror: mirrorEnabled,
+								},
+								null,
+								2,
+							),
+							"info",
+						);
+						return;
+					}
+					case "restore": {
+						const persisted = loadState();
+						const opened: string[] = [];
+						try {
+							if (persisted.mirror?.enabled || mirrorEnabled) {
+								if (!mirrorEnabled) startMirror(ctx);
+								else await openDiagram(mirrorFile(), "split");
+								opened.push("mirror");
+							}
+							if (persisted.lastDiagram) {
+								await openDiagram(persisted.lastDiagram, "split");
+								opened.push("diagram");
+							}
+						} catch (error) {
+							ctx.ui.notify(`restore: ${error instanceof Error ? error.message : String(error)}`, "warning");
+							return;
+						}
+						ctx.ui.notify(
+							opened.length ? `restored: ${opened.join(", ")}` : "nothing to restore (no mirror, no pinned diagram)",
+							"info",
+						);
+						return;
+					}
+					case "control": {
+						const kindArg = trimmed.split(/\s+/)[1];
+						const kind = kindArg === "window" || kindArg === "headless" ? kindArg : "headless";
+						const socketPath = path.join(scratchDir(), `control-${process.pid}.sock`);
+						const endpoint = await bootstrapControl(kind, socketPath);
+						saveState({ control: endpoint });
+						ctx.ui.notify(`control endpoint ready (${kind}): ${endpoint}`, "info");
 						return;
 					}
 					case "title": {
@@ -580,6 +745,7 @@ export default function piTern(pi: ExtensionAPI) {
 						} else if (action === "off") {
 							flushMirror();
 							mirrorEnabled = false;
+							saveState({ mirror: { enabled: false } });
 							ctx.ui.notify("session mirror off", "info");
 						} else if (action === "open") {
 							await openDiagram(mirrorFile(), "split");

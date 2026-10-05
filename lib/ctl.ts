@@ -1,6 +1,8 @@
 /**
- * Tern testing/inspection helpers: pane capture and control-endpoint commands.
+ * Tern testing/inspection helpers: pane capture, control-endpoint commands and
+ * control-endpoint bootstrap.
  */
+import { spawn } from "node:child_process";
 import { runTern, type TernEnv } from "./tern.ts";
 
 const CONTROL_COMMANDS = new Set([
@@ -76,4 +78,27 @@ export async function listPanes(timeoutMs = 15000): Promise<string> {
 	const result = await runTern(["ls", "--json"], timeoutMs);
 	if (result.code !== 0) throw new Error(result.stderr.trim() || `tern ls exited ${result.code}`);
 	return result.stdout;
+}
+
+/**
+ * Start a Tern window (or a headless `tern serve`) bound to a control endpoint and
+ * wait until it answers. The process is detached so it outlives this pi session.
+ */
+export async function bootstrapControl(
+	kind: "window" | "headless",
+	socketPath: string,
+	waitMs = 8000,
+): Promise<string> {
+	const args = kind === "headless" ? ["serve", "--control", socketPath] : ["--control", socketPath];
+	const child = spawn("tern", args, { detached: true, stdio: "ignore" });
+	child.unref();
+	const deadline = Date.now() + waitMs;
+	let lastError = "control endpoint did not answer";
+	while (Date.now() < deadline) {
+		const probe = await runTern(["ctl", "--control", socketPath, "state"], 2000);
+		if (probe.code === 0) return socketPath;
+		lastError = probe.stderr.trim() || probe.stdout.trim() || lastError;
+		await new Promise((resolve) => setTimeout(resolve, 300));
+	}
+	throw new Error(`${lastError} (endpoint: ${socketPath})`);
 }
