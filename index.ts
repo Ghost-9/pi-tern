@@ -25,24 +25,27 @@
  *   PI_TERN_RELAY=0        use `tern browser` CLI instead of the daemon relay
  *   PI_TERN_FORCE=1        try Tern features outside a Tern pane
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { browserOp } from "./lib/browser.ts";
-import { bootstrapControl, capturePane, controlCommand, listPanes } from "./lib/ctl.ts";
+import { bootstrapControl, capturePane, controlCommand, listPanes, remoteHosts, shotScenarios, waitForText } from "./lib/ctl.ts";
 import { openDiagram, writeDiagram, type DiagramPlacement } from "./lib/diagram.ts";
 import { waitForEvent } from "./lib/events.ts";
+import { bridgeDir, buildDashboard, linkBridge, writeDashboard } from "./lib/bridge.ts";
 import { relayPing } from "./lib/relay.ts";
+import { runShellInTern } from "./lib/run.ts";
 import { loadState, saveState } from "./lib/state.ts";
-import { readTernEnv, runTern, scratchDir, type TernEnv } from "./lib/tern.ts";
+import { insideMultiplexer, readTernEnv, runTern, scratchDir, type TernEnv } from "./lib/tern.ts";
 import { cleanShellBlock, extractMermaids, extractShellBlocks, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
-import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, type TspHello } from "./lib/tsp.ts";
+import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, normalizeOsc877, type TspHello } from "./lib/tsp.ts";
 
-const PI_TERN_VERSION = "0.2.1";
+const PI_TERN_VERSION = "0.3.0";
 
 interface ProbeState {
-	status: "idle" | "pending" | "confirmed" | "absent" | "timeout";
+	status: "idle" | "pending" | "confirmed" | "absent" | "timeout" | "skipped";
 	hello: TspHello | null;
 	probedAt?: number;
 }
@@ -52,12 +55,14 @@ let pendingInput = "";
 let probeDeadline: ReturnType<typeof setTimeout> | undefined;
 let unsubscribeInput: (() => void) | undefined;
 let lastBrowserBlock: number | undefined;
+const browserTabs: number[] = [];
 
 // ── Phase A state ────────────────────────────────────────────────────────
 let lastMermaid: { source: string; at: number; hash: string } | null = null;
 let lastShell: { source: string; at: number } | null = null;
 let mirrorEnabled = process.env.PI_TERN_MIRROR === "1";
 let mirrorLines: string[] = [];
+let mirrorWritten = 0;
 let mirrorTimer: ReturnType<typeof setTimeout> | undefined;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -90,6 +95,11 @@ function registerProbe(ctx: { mode?: string; ui?: { onTerminalInput?: (h: (data:
 	const env = readTernEnv();
 	if (!env.inTern) return;
 	if (process.env.PI_TERN_PROBE === "0") return;
+	if (insideMultiplexer()) {
+		// tmux/screen/zellij swallow APC, so the handshake cannot complete.
+		probe.status = "skipped";
+		return;
+	}
 	if (ctx.mode !== "tui") return;
 	if (typeof ctx.ui?.onTerminalInput !== "function") return;
 	if (unsubscribeInput) return;
@@ -100,7 +110,9 @@ function registerProbe(ctx: { mode?: string; ui?: { onTerminalInput?: (h: (data:
 		// TSP replies arrive as in-band APC strings; possibly split, possibly with DA1 after them.
 		if (pendingInput.length > 0 || looksLikeTsp(data)) {
 			pendingInput += data;
-			const { messages, rest } = extractTspMessages(pendingInput);
+			// Windows ConPTY delivers replies as OSC 877; normalize to APC first.
+			const normalized = normalizeOsc877(pendingInput);
+			const { messages, rest } = extractTspMessages(normalized);
 			pendingInput = "";
 			for (const message of messages) {
 				const hello = asHello(message);
@@ -113,11 +125,11 @@ function registerProbe(ctx: { mode?: string; ui?: { onTerminalInput?: (h: (data:
 			}
 			if (messages.length > 0) {
 				// Hold a partial next message or the DA1 reply that follows the hello.
-				if (rest.startsWith("\x1b_tsp") || isDa1Reply(rest)) pendingInput = rest;
+				if (rest.startsWith("\x1b_tsp") || rest.startsWith("\x1b]877") || isDa1Reply(rest)) pendingInput = rest;
 				return { consume: true };
 			}
-			// No complete message yet: hold a partial tsp prefix, pass anything else through.
-			if (rest.startsWith("\x1b_tsp")) {
+			// No complete message yet: hold a partial tsp/OSC prefix, pass anything else through.
+			if (rest.startsWith("\x1b_tsp") || rest.startsWith("\x1b]877")) {
 				pendingInput = rest;
 				return { consume: true };
 			}
@@ -222,7 +234,10 @@ function appendMirror(block: string): void {
 		total -= mirrorLines.shift()?.length ?? 0;
 		trimmed = true;
 	}
-	if (trimmed) mirrorLines.splice(1, 0, "_…older mirror content trimmed…_");
+	if (trimmed) {
+		mirrorLines.splice(1, 0, "_…older mirror content trimmed…_");
+		mirrorWritten = 0;
+	}
 	if (mirrorTimer) clearTimeout(mirrorTimer);
 	mirrorTimer = setTimeout(() => {
 		mirrorTimer = undefined;
@@ -233,7 +248,13 @@ function appendMirror(block: string): void {
 function flushMirror(): void {
 	if (!mirrorEnabled) return;
 	try {
-		writeFileSync(mirrorFile(), mirrorLines.join("\n"), "utf8");
+		const text = mirrorLines.join("\n");
+		if (mirrorWritten > 0 && mirrorWritten <= text.length) {
+			appendFileSync(mirrorFile(), text.slice(mirrorWritten), "utf8");
+		} else {
+			writeFileSync(mirrorFile(), text, "utf8");
+		}
+		mirrorWritten = text.length;
 	} catch {
 		/* best effort */
 	}
@@ -243,6 +264,7 @@ function startMirror(ctx: any): void {
 	mirrorEnabled = true;
 	saveState({ mirror: { enabled: true } });
 	if (mirrorLines.length === 0) {
+		mirrorWritten = 0;
 		mirrorLines = ["# π session mirror", "", `_${process.cwd()} · ${new Date().toISOString()}_`, ""];
 		try {
 			const entries = ctx?.sessionManager?.getBranch?.() ?? [];
@@ -259,6 +281,30 @@ function startMirror(ctx: any): void {
 	appendMirror(`_mirror on (${new Date().toISOString()})_`);
 	flushMirror();
 	void openDiagram(mirrorFile(), "split").catch(() => undefined);
+}
+
+/** Write the Markdown dashboard the pi-bridge Tern canvas renders. */
+function refreshBridge(ctx: any): void {
+	try {
+		const env = readTernEnv();
+		const model = String((ctx?.model as any)?.id ?? (ctx?.model as any)?.name ?? "pi").split("/").pop() ?? "pi";
+		const usage = ctx?.getContextUsage?.();
+		writeDashboard(
+			buildDashboard({
+				version: PI_TERN_VERSION,
+				tern: env.version,
+				model,
+				context: typeof usage?.percent === "number" ? `${Math.round(usage.percent)}%` : undefined,
+				cwd: process.cwd(),
+				mirror: mirrorEnabled ? mirrorFile() : "off",
+				lastDiagram: loadState().lastDiagram,
+				lastShell: lastShell ? new Date(lastShell.at).toISOString().slice(11, 19) : undefined,
+				browserTabs: [...browserTabs],
+			}),
+		);
+	} catch {
+		/* best effort */
+	}
 }
 
 function asText(text: string) {
@@ -300,49 +346,11 @@ async function captureWithRetry(
 	}
 	throw new Error(`capture failed: ${message}`);
 }
-
-/**
- * Run a shell command in Tern: a new visible pane (default) or an existing one.
- * Returns the pane id and the captured output after the command exits (or the
- * wait window elapses).
- */
-async function runShellInTern(
-	env: TernEnv,
-	command: string,
-	options: { block?: string; cwd?: string; waitSeconds?: number } = {},
-): Promise<{ block: string; output: string; timedOut: boolean }> {
-	const cleaned = cleanShellBlock(command);
-	if (!cleaned) throw new Error("empty command");
-	if (options.block) {
-		const sent = await runTern(["run", options.block, cleaned], 15000);
-		if (sent.code !== 0) throw new Error(sent.stderr.trim() || `tern run exited ${sent.code}`);
-		return { block: options.block, output: "", timedOut: false };
-	}
-	const args = ["new", "tab", "--json", "--keep-open"];
-	if (options.cwd) args.push("--cwd", options.cwd);
-	args.push("--", "sh", "-lc", cleaned);
-	const created = await runTern(args, 15000);
-	if (created.code !== 0) throw new Error(created.stderr.trim() || `tern new tab exited ${created.code}`);
-	let block = "";
-	try {
-		block = String((JSON.parse(created.stdout) as { block?: number }).block ?? "");
-	} catch {
-		/* fall through to the error below */
-	}
-	if (!block) throw new Error(`could not read the new pane id: ${created.stdout.slice(0, 200)}`);
-	const waitSeconds = Math.max(1, options.waitSeconds ?? 120);
-	const waited = await runTern(
-		["wait", block, "--until", "exit", "--timeout", String(waitSeconds)],
-		(waitSeconds + 10) * 1000,
-	);
-	const output = await capturePane(block, {});
-	return { block, output: output.trimEnd(), timedOut: waited.code !== 0 || waited.timedOut };
-}
-
 export default function piTern(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event: unknown, ctx: any) => {
 		registerProbe(ctx);
 		updateTitle(ctx);
+		refreshBridge(ctx);
 		// pi writes its own startup title; re-apply ours once it has settled.
 		setTimeout(() => updateTitle(ctx), 3000);
 		const persisted = loadState();
@@ -355,15 +363,16 @@ export default function piTern(pi: ExtensionAPI) {
 	pi.on("message_end", async (event: any) => {
 		scanMessageForMermaid(event?.message);
 		scanMessageForShell(event?.message);
-		if (mirrorEnabled) appendMirror(renderMessageMarkdown(event?.message));
+		if (mirrorEnabled) appendMirror(renderMessageMarkdown(event?.message, new Date()));
 	});
 
 	pi.on("tool_execution_end", async (event: any) => {
-		if (mirrorEnabled) appendMirror(renderToolMarkdown(event));
+		if (mirrorEnabled) appendMirror(renderToolMarkdown(event, new Date()));
 	});
 
 	pi.on("turn_end", async (_event: unknown, ctx: any) => {
 		updateTitle(ctx);
+		refreshBridge(ctx);
 	});
 
 	pi.on("agent_end", async () => {
@@ -448,7 +457,7 @@ export default function piTern(pi: ExtensionAPI) {
 		description:
 			"Drive Tern's built-in WKWebView browser (picture-in-picture over the pane). Ops: open {url}, state, snapshot, act {action,ref,text,keys}, eval {script}, capture (returns a PNG pi can see), input, goto, nav, events, close. Returns the JSON answer.",
 		parameters: Type.Object({
-			op: Type.String({ description: "open|state|snapshot|act|eval|capture|input|goto|nav|events|close" }),
+			op: Type.String({ description: "open|state|snapshot|act|eval|capture|input|goto|nav|events|close|tabs" }),
 			url: Type.Optional(Type.String()),
 			block: Type.Optional(Type.Number({ description: "Browser block id; defaults to the last opened one" })),
 			ref: Type.Optional(Type.String()),
@@ -456,6 +465,9 @@ export default function piTern(pi: ExtensionAPI) {
 			text: Type.Optional(Type.String()),
 			keys: Type.Optional(Type.String()),
 			script: Type.Optional(Type.String()),
+			baseline: Type.Optional(
+				Type.String({ description: "Save/compare this capture against a named PNG baseline under scratch/baselines" }),
+			),
 			timeoutSeconds: Type.Optional(Type.Number()),
 		}),
 		async execute(_id, params) {
@@ -470,12 +482,30 @@ export default function piTern(pi: ExtensionAPI) {
 			if (params.keys !== undefined) raw.keys = params.keys;
 			if (params.script !== undefined) raw.script = params.script;
 			const timeout = (params.timeoutSeconds ?? 20) * 1000;
-			const answer =
-				params.op === "capture"
-					? await captureWithRetry(env, (raw.block as number | undefined) ?? lastBrowserBlock, timeout)
-					: await browserOp(env, raw, timeout);
+			if (params.op === "tabs") {
+				return asText(JSON.stringify({ tabs: browserTabs, last: lastBrowserBlock }, null, 2));
+			}
+			let answer: Awaited<ReturnType<typeof browserOp>>;
+			try {
+				answer =
+					params.op === "capture"
+						? await captureWithRetry(env, (raw.block as number | undefined) ?? lastBrowserBlock, timeout)
+						: await browserOp(env, raw, timeout);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (params.op === "act" && message.includes("not_found")) {
+					// Stale ref: refresh the snapshot, then retry the action once.
+					await browserOp(env, { op: "snapshot", block: raw.block ?? lastBrowserBlock }, timeout).catch(() => undefined);
+					answer = await browserOp(env, raw, timeout);
+				} else {
+					throw error;
+				}
+			}
 			const ok = answer.ok as { block?: number; data?: string; mime?: string; width?: number; height?: number } | undefined;
-			if (ok && typeof ok.block === "number") lastBrowserBlock = ok.block;
+			if (ok && typeof ok.block === "number") {
+				lastBrowserBlock = ok.block;
+				if (params.op === "open" && !browserTabs.includes(ok.block)) browserTabs.push(ok.block);
+			}
 			// A capture is an image: hand pi the PNG (and keep a copy on disk).
 			if (params.op === "capture" && ok?.data && typeof ok.mime === "string" && ok.mime.startsWith("image/")) {
 				const ext = ok.mime === "image/png" ? "png" : ok.mime === "image/jpeg" ? "jpg" : "img";
@@ -487,15 +517,37 @@ export default function piTern(pi: ExtensionAPI) {
 				} catch {
 					/* keep the image in the reply anyway */
 				}
+				let baselineNote = "";
+				if (params.baseline) {
+					try {
+						const dir = path.join(scratchDir(), "baselines");
+						mkdirSync(dir, { recursive: true });
+						const safe = String(params.baseline).replace(/[^a-zA-Z0-9._-]+/g, "-").slice(0, 60) || "baseline";
+						const target = path.join(dir, `${safe}.png`);
+						const bytes = Buffer.from(ok.data, "base64");
+						const sha = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
+						const previous = existsSync(target)
+							? createHash("sha256").update(readFileSync(target)).digest("hex").slice(0, 16)
+							: undefined;
+						writeFileSync(target, bytes);
+						baselineNote = previous
+							? previous === sha
+								? ` · baseline unchanged (${safe})`
+								: ` · baseline changed (${safe})`
+							: ` · baseline created (${safe})`;
+					} catch {
+						baselineNote = " · baseline write failed";
+					}
+				}
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: `Tern browser capture ${ok.width ?? "?"}x${ok.height ?? "?"}${saved ? ` → ${file}` : ""}`,
+							text: `Tern browser capture ${ok.width ?? "?"}x${ok.height ?? "?"}${saved ? ` → ${file}` : ""}${baselineNote}`,
 						},
 						{ type: "image" as const, data: ok.data, mimeType: ok.mime },
 					],
-					details: { block: ok.block ?? params.block ?? lastBrowserBlock, width: ok.width, height: ok.height, file: saved ? file : undefined },
+					details: { block: ok.block ?? params.block ?? lastBrowserBlock, width: ok.width, height: ok.height, file: saved ? file : undefined, baseline: params.baseline },
 				};
 			}
 			return asText(JSON.stringify(answer, null, 2));
@@ -588,20 +640,32 @@ export default function piTern(pi: ExtensionAPI) {
 		name: "tern_watch",
 		label: "Tern watch",
 		description:
-			"Wait for the next Tern daemon event (default pane_exited) with an optional pane filter, and return it. Use to wait for a command, test run or server in another pane instead of polling.",
+			"Wait for Tern activity. With expect, poll a pane's output until a regex matches (dev servers, builds, prompts) and return the tail. Without expect, wait for the next daemon event (default pane_exited) with an optional pane filter. Use instead of polling.",
 		parameters: Type.Object({
 			events: Type.Optional(Type.String({ description: "Comma-separated event names, default pane_exited" })),
 			pane: Type.Optional(Type.Number({ description: "Only events for this pane/block id" })),
+			expect: Type.Optional(Type.String({ description: "Regex to wait for in a pane's output" })),
+			block: Type.Optional(Type.String({ description: "Pane to poll with expect (default @focused)" })),
 			timeoutSeconds: Type.Optional(Type.Number({ description: "Default 120" })),
 		}),
 		async execute(_id, params) {
+			const timeoutMs = Math.max(1000, (params.timeoutSeconds ?? 120) * 1000);
+			if (params.expect) {
+				const result = await waitForText(params.block ?? "@focused", params.expect, timeoutMs);
+				return asText(
+					JSON.stringify(
+						{ matched: result.matched, waitedMs: result.waitedMs, tail: result.output.slice(-2000) },
+						null,
+						2,
+					),
+				);
+			}
 			const names = new Set(
 				(params.events ?? "pane_exited")
 					.split(",")
 					.map((name) => name.trim())
 					.filter(Boolean),
 			);
-			const timeoutMs = Math.max(1000, (params.timeoutSeconds ?? 120) * 1000);
 			const { event, timedOut } = await waitForEvent({
 				timeoutMs,
 				match: (candidate) => {
@@ -672,13 +736,73 @@ export default function piTern(pi: ExtensionAPI) {
 				command = lastShell.source;
 			}
 			if (!command.trim()) throw new Error("empty command (pass command or set fromTranscript)");
-			const result = await runShellInTern(env, command, {
+			const result = await runShellInTern(command, {
 				block: params.block,
 				cwd: params.cwd,
 				waitSeconds: params.waitSeconds,
 			});
 			const output = result.output.length > 20000 ? result.output.slice(-20000) : result.output;
 			return asText(`${result.timedOut ? "still running" : "done"} · pane ${result.block}\n\n${output || "(no output)"}`);
+		},
+	});
+
+	const shotTool = defineTool({
+		name: "tern_shot",
+		label: "Tern shot",
+		description:
+			"Render Tern scenarios offscreen to PNG + layout JSON (tern shot). Scenario names default to Tern's built-ins (single, split, palette, find, tabs). Useful as golden screenshots for UI checks.",
+		parameters: Type.Object({
+			scenarios: Type.Optional(Type.Array(Type.String(), { description: "Scenario files, directories or golden names" })),
+			outDir: Type.Optional(Type.String({ description: "Output directory (default under scratch/shots)" })),
+		}),
+		async execute(_id, params) {
+			const outDir = params.outDir ?? path.join(scratchDir(), "shots", String(Date.now()));
+			const result = await shotScenarios(params.scenarios ?? [], outDir, 180000);
+			return asText(
+				JSON.stringify(
+					{ code: result.code, outDir, files: result.files.slice(0, 100), output: result.output.slice(0, 2000) },
+					null,
+					2,
+				),
+			);
+		},
+	});
+
+	const remoteTool = defineTool({
+		name: "tern_remote",
+		label: "Tern remote",
+		description: "List or discover Tern remote hosts (tern remote hosts|discover). Read-only.",
+		parameters: Type.Object({
+			action: Type.Union([Type.Literal("hosts"), Type.Literal("discover")], { description: "Default hosts" }),
+		}),
+		async execute(_id, params) {
+			return asText(await remoteHosts(params.action));
+		},
+	});
+
+	const bridgeTool = defineTool({
+		name: "tern_bridge",
+		label: "Tern bridge",
+		description:
+			"The pi-bridge Tern canvas: a native Markdown dashboard of this pi session. Actions: install (writes and links the plugin), refresh (rewrite the dashboard), status.",
+		parameters: Type.Object({
+			action: Type.Union([Type.Literal("install"), Type.Literal("refresh"), Type.Literal("status")]),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx: any) {
+			if (params.action === "install") {
+				refreshBridge(ctx);
+				const result = await linkBridge();
+				return asText(
+					`pi-bridge installed at ${result.dir} (link ${result.linkCode}, reload ${result.reloadCode}); press ctrl+shift+f10 in Tern`,
+				);
+			}
+			if (params.action === "refresh") {
+				refreshBridge(ctx);
+				return asText("pi-bridge dashboard refreshed");
+			}
+			return asText(
+				JSON.stringify({ dir: bridgeDir(), installed: existsSync(path.join(bridgeDir(), "plugin.toml")) }, null, 2),
+			);
 		},
 	});
 
@@ -692,12 +816,15 @@ export default function piTern(pi: ExtensionAPI) {
 	pi.registerTool(watchTool);
 	pi.registerTool(diagnoseTool);
 	pi.registerTool(runTool);
+	pi.registerTool(shotTool);
+	pi.registerTool(remoteTool);
+	pi.registerTool(bridgeTool);
 
 	// ── Command ────────────────────────────────────────────────────────────
 
 	pi.registerCommand("tern", {
 		description:
-			"Tern integration: status | diagnose | restore | control [window|headless] | run [--last] <cmd> | title | bell | diagram [--last] [--pin] <mermaid> | mirror on|off|open|status | browser <json> | capture [block] | panes",
+			"Tern integration: status | diagnose | restore | control [window|headless] | run [--last] <cmd> | bridge install|refresh|status | title | bell | diagram [--last] [--pin] <mermaid> | mirror on|off|open|status | browser <json> | capture [block] | panes",
 		handler: async (args: string, ctx: any) => {
 			const trimmed = (args ?? "").trim();
 			const [sub = "status"] = trimmed.split(/\s+/);
@@ -786,7 +913,7 @@ export default function piTern(pi: ExtensionAPI) {
 							block = parts[1];
 							command = rest.slice(rest.indexOf(block) + block.length).trim();
 						}
-						const result = await runShellInTern(readTernEnv(), command, { block });
+						const result = await runShellInTern(command, { block });
 						ctx.ui.notify(
 							`${result.timedOut ? "still running" : "done"} · pane ${result.block}\n${result.output.slice(-1500) || "(no output)"}`,
 							"info",
@@ -870,6 +997,28 @@ export default function piTern(pi: ExtensionAPI) {
 						} else {
 							ctx.ui.notify(`mirror: ${mirrorEnabled ? "on" : "off"} (${mirrorFile()})`, "info");
 						}
+						return;
+					}
+					case "bridge": {
+						const action = trimmed.split(/\s+/)[1] ?? "install";
+						if (action === "refresh") {
+							refreshBridge(ctx);
+							ctx.ui.notify("pi-bridge dashboard refreshed", "info");
+							return;
+						}
+						if (action === "status") {
+							ctx.ui.notify(
+								JSON.stringify({ dir: bridgeDir(), installed: existsSync(path.join(bridgeDir(), "plugin.toml")) }, null, 2),
+								"info",
+							);
+							return;
+						}
+						refreshBridge(ctx);
+						const result = await linkBridge();
+						ctx.ui.notify(
+							`pi-bridge installed (link ${result.linkCode}, reload ${result.reloadCode}) — press ctrl+shift+f10 in Tern`,
+							"info",
+						);
 						return;
 					}
 					case "browser": {

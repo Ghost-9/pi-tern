@@ -1,0 +1,6 @@
+# Minimal tern-shot scenario.
+# `size WxH` sets the offscreen viewport, `shot NAME` writes NAME.png and NAME.layout.json
+# (plus a -dark variant) into `tern shot --out DIR`.
+
+size 800 600
+shot example

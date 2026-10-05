@@ -38,7 +38,16 @@ export function isDa1Reply(data: string): boolean {
 }
 
 export function looksLikeTsp(data: string): boolean {
-	return data.includes(TSP_APC_PREFIX) || data.startsWith("\x1b_tsp");
+	return data.includes(TSP_APC_PREFIX) || data.startsWith("\x1b_tsp") || data.includes("\x1b]877;tsp;");
+}
+
+/**
+ * ConPTY (Windows) cannot carry APC on the input side, so Tern sends
+ * terminal -> program frames as OSC 877: ESC ] 877 ; tsp;... ESC \ (or BEL).
+ * Normalize complete OSC-877 frames to the APC form the parser understands.
+ */
+export function normalizeOsc877(data: string): string {
+	return data.replace(/\x1b\]877;tsp;([\s\S]*?)(?:\x1b\\|\x07)/g, (_match, body: string) => `${TSP_APC_PREFIX}${body}${ST}`);
 }
 
 /**

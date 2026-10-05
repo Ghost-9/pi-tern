@@ -29,6 +29,11 @@ It never writes TSP frames, so pi's renderer is not disturbed. Native Tern surfa
 | Tern browser | stable | `tern_browser` drives Tern's WKWebView picture-in-picture: `open`, `state`, `snapshot`, `act`, `eval`, `capture` (returns an image), `input`, `goto`, `nav`, `events`, `close` |
 | Pane inspection | stable | `tern_capture` (text, ANSI, HTML, scrollback, surfaces), `tern_panes`, `tern_ctl` |
 | Pane events | stable | `tern_watch` waits for daemon events (`pane_exited`, …) with an optional pane filter, so pi can wait for a test run or server instead of polling |
+| Pane output waits | stable | `tern_watch --expect <regex>` polls a pane until it prints a pattern (dev servers, builds) and returns the tail |
+| Browser suite | stable | stale-ref recovery for `act`, named PNG baselines with change detection, tab listing |
+| pi-bridge canvas | experimental | `/tern bridge install` links a Tern plugin that renders a native Markdown dashboard in a canvas (`ctrl+shift+f10`) |
+| Golden shots | stable | `tern_shot` renders scenario files to PNG + layout JSON (`tern shot`) |
+| Remote hosts | stable | `tern_remote` lists or discovers Tern remote hosts |
 | Diagnostics | stable | `tern_diagnose` and `/tern diagnose`: environment, probe, relay round trip, control endpoint, persisted state |
 | Control endpoint | stable | `/tern control [window|headless]` starts a Tern window or headless session with a control socket; `tern_ctl` uses it automatically |
 | Restore | stable | `/tern restore` reopens the session mirror and the last pinned diagram; state survives Tern/pi restarts |
@@ -78,6 +83,7 @@ Commands:
 /tern run [--last] <command>  run a shell command in a visible Tern pane
 /tern restore                 reopen the mirror and the last pinned diagram
 /tern control [window|headless]  start a control endpoint for tern_ctl
+/tern bridge install|refresh|status  install the pi-bridge Tern canvas
 /tern diagram <mermaid>       render a diagram through Tern's merman engine
 /tern diagram --last [--pin]  render the newest Mermaid fence in the conversation
 /tern mirror on|off|open      mirror the conversation into a Markdown block
@@ -87,7 +93,7 @@ Commands:
 /tern title | bell            apply the title, or ring the bell once
 ```
 
-Model-callable tools: `tern_status`, `tern_diagram`, `tern_browser`, `tern_capture`, `tern_panes`, `tern_ctl`, `tern_mirror`, `tern_watch`, `tern_diagnose`, `tern_run`.
+Model-callable tools: `tern_status`, `tern_diagram`, `tern_browser`, `tern_capture`, `tern_panes`, `tern_ctl`, `tern_mirror`, `tern_watch`, `tern_diagnose`, `tern_run`, `tern_shot`, `tern_remote`, `tern_bridge`.
 
 Examples:
 
@@ -140,6 +146,7 @@ Three channels, kept separate:
 - **Tern file blocks are not panes.** `tern capture` cannot read a file block back (`no such pane in this session daemon`), so diagram rendering is verified visually.
 - **Browser capture needs a rendered picture-in-picture.** Tern answers `capture: a 0×0 px image is out of range` while the PiP is not visible (window or tab not frontmost).
 - **`tern_ctl` needs a control endpoint.** Run `/tern control` (headless by default) or launch Tern with `--control EP` / set `TERN_WINDOW_SOCKET`.
+- **The pi-bridge canvas is experimental.** The plugin loads and binds its chord (verified in Tern's log and `plugin list`), but the Luau canvas rendering itself has not been visually verified from CI.
 
 ## Security
 

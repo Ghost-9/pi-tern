@@ -1,13 +1,15 @@
 // Protocol and helper tests. No Tern required; runs anywhere with Node >= 22.6.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
+import { rmSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { asHello, encodeHello, extractTspMessages } from "../lib/tsp.ts";
+import { asHello, encodeHello, extractTspMessages, normalizeOsc877 } from "../lib/tsp.ts";
 import { eventName, parseEventLine } from "../lib/events.ts";
 import { encodeFrame, RelayClient } from "../lib/relay.ts";
+import { buildDashboard } from "../lib/bridge.ts";
+import { runShellInTern } from "../lib/run.ts";
 import { extractMermaids, messageText, renderMessageMarkdown, summarizeArgs, cleanShellBlock, extractShellBlocks } from "../lib/text.ts";
 import { writeDiagram } from "../lib/diagram.ts";
 
@@ -108,6 +110,65 @@ test("extracts and cleans shell fences", () => {
 	assert.equal(blocks[0], "$ npm test\n$ npm run build");
 	assert.equal(cleanShellBlock(blocks[0]), "npm test\n$ npm run build".replace("$ ", ""));
 	assert.equal(extractShellBlocks("```ts\nconsole.log(1)\n```").length, 0);
+});
+
+test("normalizes ConPTY OSC-877 replies to APC", () => {
+	const body =
+		'{"r":"hello","v":1,"term":"tern","kinds":["text"],"features":[],"apc":65536,"credits":2}';
+	const osc = `\x1b]877;tsp;r;${body}\x1b\\`;
+	const out = extractTspMessages(normalizeOsc877(osc));
+	assert.equal(out.messages.length, 1);
+	assert.equal(out.messages[0].verb, "r");
+	// BEL-terminated OSC 877 (ConPTY) is accepted too.
+	const bel = `\x1b]877;tsp;r;${body}\x07`;
+	assert.equal(extractTspMessages(normalizeOsc877(bel)).messages.length, 1);
+});
+
+test("buildDashboard renders the bridge markdown", () => {
+	const md = buildDashboard({
+		version: "0.3.0",
+		tern: "0.4.5",
+		model: "deepseek-v4.1-flash",
+		context: "42%",
+		cwd: "/tmp/x",
+		mirror: "off",
+		lastDiagram: "/tmp/d.png",
+		lastShell: "12:00:00",
+		browserTabs: [1, 2],
+		now: new Date("2026-10-06T12:00:00Z"),
+	});
+	assert.match(md, /pi-tern/);
+	assert.match(md, /deepseek-v4\.1-flash/);
+	assert.match(md, /```mermaid/);
+	assert.match(md, /browser tabs \| 1, 2/);
+});
+
+test("runShellInTern drives new/wait/capture through a fake tern", async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), "pi-tern-fake-"));
+	const bin = path.join(dir, "tern");
+	writeFileSync(
+		bin,
+		`#!/bin/sh
+case "$1 $2" in
+  "new tab") echo '{"session":1,"tab":2,"block":42}' ;;
+  "wait 42") exit 0 ;;
+  "capture 42") echo 'run-ok-fake' ;;
+  *) exit 0 ;;
+esac
+`,
+		{ mode: 0o755 },
+	);
+	const oldPath = process.env.PATH;
+	process.env.PATH = `${dir}:${oldPath}`;
+	try {
+		const result = await runShellInTern("echo hi", {});
+		assert.equal(result.block, "42");
+		assert.match(result.output, /run-ok-fake/);
+		assert.equal(result.timedOut, false);
+	} finally {
+		process.env.PATH = oldPath;
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("parses tern event lines", () => {

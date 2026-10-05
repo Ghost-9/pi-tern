@@ -65,3 +65,8 @@ export function assertTern(env: TernEnv, what: string): void {
 		throw new Error(`${what} needs a Tern pane (TERM_PROGRAM=tern). Set PI_TERN_FORCE=1 to try anyway.`);
 	}
 }
+
+/** tmux/screen/zellij swallow APC strings, so the TSP handshake cannot work there. */
+export function insideMultiplexer(): boolean {
+	return Boolean(process.env.TMUX || process.env.STY || process.env.ZELLIJ);
+}

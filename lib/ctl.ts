@@ -3,6 +3,7 @@
  * control-endpoint bootstrap.
  */
 import { spawn } from "node:child_process";
+import { readdirSync } from "node:fs";
 import { runTern, type TernEnv } from "./tern.ts";
 
 const CONTROL_COMMANDS = new Set([
@@ -78,6 +79,52 @@ export async function listPanes(timeoutMs = 15000): Promise<string> {
 	const result = await runTern(["ls", "--json"], timeoutMs);
 	if (result.code !== 0) throw new Error(result.stderr.trim() || `tern ls exited ${result.code}`);
 	return result.stdout;
+}
+
+/** Poll a pane's visible text until the pattern appears (dev servers, builds, prompts). */
+export async function waitForText(
+	block: string,
+	pattern: string,
+	timeoutMs: number,
+	intervalMs = 500,
+): Promise<{ matched: boolean; output: string; waitedMs: number }> {
+	const regex = new RegExp(pattern, "m");
+	const started = Date.now();
+	let output = "";
+	while (Date.now() - started < timeoutMs) {
+		try {
+			output = await capturePane(block, {});
+		} catch {
+			output = "";
+		}
+		if (regex.test(output)) return { matched: true, output, waitedMs: Date.now() - started };
+		await new Promise((resolve) => setTimeout(resolve, intervalMs));
+	}
+	return { matched: false, output, waitedMs: Date.now() - started };
+}
+
+/** Render offscreen Tern scenarios to PNG + layout JSON (`tern shot`). */
+export async function shotScenarios(
+	scenarios: string[],
+	outDir: string,
+	timeoutMs = 180000,
+): Promise<{ files: string[]; output: string; code: number }> {
+	const args = ["shot", "--out", outDir, ...scenarios];
+	const result = await runTern(args, timeoutMs);
+	const files: string[] = [];
+	try {
+		for (const entry of readdirSync(outDir, { recursive: true })) files.push(String(entry));
+	} catch {
+		/* no output directory */
+	}
+	return { files, output: `${result.stdout}${result.stderr}`.trim(), code: result.code };
+}
+
+/** `tern remote hosts` / `tern remote discover` (empty until a host is trusted). */
+export async function remoteHosts(action: "hosts" | "discover" = "hosts", timeoutMs = 20000): Promise<string> {
+	const result = await runTern(["remote", action], timeoutMs);
+	if (result.code !== 0) throw new Error(result.stderr.trim() || `tern remote ${action} exited ${result.code}`);
+	return result.stdout.trim();
 }
 
 /**

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0 — 2026-10-06
+
+P0/P1 roadmap release (extension-only).
+
+- **`tern_watch --expect <regex>`** — polls a pane's output until a pattern appears (dev servers, builds, prompts) and returns the tail. Measured: matched `READY-PITERN` in 1.9 s.
+- **Browser suite** — stale-ref recovery for `act` (re-snapshot + one retry), named PNG baselines with change detection, and a `tabs` listing.
+- **`pi-bridge`** — `/tern bridge install` writes and links a Tern plugin that renders a native Markdown dashboard (model, context, mirror, last diagram/shell, browser tabs) in a canvas; chord `ctrl+shift+f10`; `/tern bridge refresh`. Verified: plugin `ready`, chord bound in Tern's log.
+- **`tern_shot`** — renders scenario files to PNG + layout JSON via `tern shot` (verified: 800x600 PNGs + layout JSON).
+- **`tern_remote`** — lists or discovers Tern remote hosts.
+- **ConPTY / multiplexers** — OSC-877 replies are normalized so the probe works on Windows; tmux/screen/zellij are detected and the probe is skipped.
+- **Tests** — 14 protocol tests (OSC-877, dashboard rendering, a fake-`tern` run harness) plus live checks.
+
 ## 0.2.1 — 2026-10-06
 
 - **Runnable shell blocks** — `tern_run` and `/tern run [--last]` execute a bash/sh command from the conversation in a visible Tern pane, wait for exit and return the captured output. `PI_TERN_RUN=0` disables it.

@@ -46,7 +46,7 @@ export function summarizeArgs(args: unknown, limit = 160): string {
 }
 
 /** Render one finalized message as a Markdown block for the session mirror. */
-export function renderMessageMarkdown(message: unknown): string {
+export function renderMessageMarkdown(message: unknown, at?: Date): string {
 	const m = message as { role?: string; content?: unknown } | null | undefined;
 	if (!m) return "";
 	const role = m.role ?? "message";
@@ -57,7 +57,7 @@ export function renderMessageMarkdown(message: unknown): string {
 		.map((part) => part as { type?: string; name?: string; arguments?: unknown })
 		.filter((p) => p?.type === "toolCall")
 		.map((p) => `- 🔧 \`${p.name ?? "tool"}\` ${summarizeArgs(p.arguments)}`.trimEnd());
-	const heading =
+	const base =
 		role === "assistant"
 			? "🤖 Assistant"
 			: role === "user"
@@ -65,18 +65,20 @@ export function renderMessageMarkdown(message: unknown): string {
 				: role === "toolResult"
 					? "🔧 Tool result"
 					: `### ${role}`;
+	const heading = at ? `${base} · ${at.toISOString().slice(11, 19)}` : base;
 	const body = [text, ...toolLines].filter(Boolean).join("\n\n");
 	if (!body) return "";
 	return `## ${heading}\n\n${body}\n`;
 }
 
 /** Render a tool_execution_end event as one Markdown line. */
-export function renderToolMarkdown(event: unknown): string {
+export function renderToolMarkdown(event: unknown, at?: Date): string {
 	const e = event as { toolName?: string; isError?: boolean; result?: unknown; error?: unknown } | null | undefined;
 	if (!e?.toolName) return "";
 	const state = e.isError ? "✗" : "✓";
+	const time = at ? ` · ${at.toISOString().slice(11, 19)}` : "";
 	const error = e.error ? ` — ${String((e.error as { message?: string })?.message ?? e.error).slice(0, 200)}` : "";
-	return `- ${state} \`${e.toolName}\`${error}`;
+	return `- ${state} \`${e.toolName}\`${time}${error}`;
 }
 
 /** Fenced shell blocks in prose (bash, sh, shell, zsh, console). */
