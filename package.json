@@ -1,0 +1,58 @@
+{
+	"name": "pi-tern",
+	"version": "0.1.0",
+	"description": "Tern integration for the pi coding agent: TSP handshake, native Mermaid diagrams, WKWebView browser automation, pane capture and a session mirror.",
+	"license": "MIT",
+	"author": "Mayank Batra",
+	"type": "module",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Ghost-9/pi-tern.git"
+	},
+	"homepage": "https://github.com/Ghost-9/pi-tern#readme",
+	"bugs": {
+		"url": "https://github.com/Ghost-9/pi-tern/issues"
+	},
+	"keywords": [
+		"pi-package",
+		"pi",
+		"pi-coding-agent",
+		"tern",
+		"tsp",
+		"mermaid",
+		"terminal",
+		"stencil",
+		"extension",
+		"developer-tools"
+	],
+	"files": [
+		"index.ts",
+		"lib",
+		"docs",
+		"README.md",
+		"LICENSE",
+		"CHANGELOG.md"
+	],
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"test": "node --test test/protocol.test.ts",
+		"test:live": "node --test test/live.test.ts",
+		"typecheck": "tsc --noEmit"
+	},
+	"engines": {
+		"node": ">=22.6.0"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "^1.0.3",
+		"@types/node": "^22.10.0",
+		"typebox": "^1.3.27",
+		"typescript": "^5.7.0"
+	}
+}
