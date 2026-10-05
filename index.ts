@@ -46,7 +46,7 @@ import { insideMultiplexer, readTernEnv, runTern, scratchDir, type TernEnv } fro
 import { cleanShellBlock, extractMermaids, extractShellBlocks, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
 import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, normalizeOsc877, type TspHello } from "./lib/tsp.ts";
 
-const PI_TERN_VERSION = "0.9.0";
+const PI_TERN_VERSION = "0.9.1";
 
 interface ProbeState {
 	status: "idle" | "pending" | "confirmed" | "absent" | "timeout" | "skipped";

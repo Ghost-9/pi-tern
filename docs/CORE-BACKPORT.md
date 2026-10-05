@@ -1,65 +1,51 @@
-# Core back-port: can the extension override it instead of patching pi?
+# Core back-port: no PR, no binary edits — the wrapper + loader-hook route
 
-**Answer: a pi extension cannot override pi's renderer, but a full native back-port does not
-require editing any core binary.** Two routes exist; one is extension-only and partial, one is a
-wrapper + Node loader hook that patches `@earendil-works/pi-tui` at load time. Both were checked on
-this machine (pi 1.0.3, Node 26.10.0).
+**Corrected 2026-10-06.** An earlier version of this document claimed the loader hook worked through
+the default launcher because `@earendil-works/pi-tui` resolves under it. That was wrong: the hook
+fires on *resolve*, but the managed bundle **inlines** pi-tui. Measured on managed pi 1.0.4 / Node
+26.10:
 
-## Why an extension alone cannot do it
+| Entry | pi-tui resolves | pi-tui **loads** | load transform applied |
+| --- | --- | --- | --- |
+| `pi` (managed launcher → `dist/bundle/cli.js`) | 16 | **0** | no |
+| `node …/dist/cli.js` (unbundled, piped entry) | 103 | **44** | **44 modules** |
+| `node --import <hook> …/dist/cli.js` interactive, inside Tern | — | — | marker written (44 modules) |
 
-- `pi` runs `dist/bundle/cli.js`, an esbuild bundle with pi-tui **inlined**
-  (`dist/bundle/chunks/chunk-…js`). Nothing in `node_modules` is imported for the TUI.
-- pi-tui exposes no frame-provider or renderer seam, and `Component` has no `describe()`.
-- An extension can reach the live TUI object through `ctx.ui` factories and monkey-patch
-  `tui.terminal.write`, and can write raw bytes to the pty — but it only ever sees rendered ANSI
-  rows, never component state. It can therefore emit at best `rows`/`ansi` nodes (a re-encoding of
-  the TUI's own output), not semantic `dock`/`composer`/transcript surfaces.
+The unbundled entry imports real modules from `releases/<v>/node_modules`; a Node loader hook
+(`module.register`) therefore transforms pi-tui at load time. The managed launcher resolves the
+current release from `~/.pi/agent/install/current-version`; a wrapper does the same and execs the
+unbundled entry.
 
-### Extension-only workaround (partial)
+## Wrapper design
 
-A `flow` surface (`mode:"flow"`, `listen:false`) does not own the pane, so an extension can write a
-small native widget beside pi's ANSI TUI without core changes. Useful for status cards/diagrams;
-frame tearing is possible if a write lands inside the TUI's synchronized-output frames. Not parity.
-
-## The wrapper + loader-hook route (full, no binary edits) — verified
-
-`dist/cli.js` (169 bytes) imports the **unbundled** `dist/main.js`, which imports
-`@earendil-works/pi-tui` as a real Node specifier. A Node ESM loader hook intercepts it:
-
+```sh
+#!/bin/sh
+# pi-tern — patched pi when the hook applies, stock pi otherwise
+install=$HOME/.pi/agent/install
+version=$(cat "$install/current-version")
+release=$install/releases/$version/node_modules/@earendil-works/pi-coding-agent
+hook=$HOME/.pi/tern/hook/register.mjs
+if [ -f "$release/dist/cli.js" ] && [ -f "$hook" ]; then
+  exec node --import "$hook" "$release/dist/cli.js" "$@"
+fi
+exec pi "$@"   # graceful fallback to the stock launcher
 ```
-$ node --import hook.mjs /…/pi-coding-agent/dist/cli.js --no-session -p "reply OK"
-[hook] pi-tui resolved: @earendil-works/pi-tui
-```
 
-(With `dist/bundle/cli.js` the hook never fires — the bundle is inlined.)
+- **Updates flow.** `pi update` replaces `releases/`; the wrapper reads `current-version` on every
+  run. The hook version-gates: an unknown pi-tui layout is left untouched (stock behavior) instead
+  of breaking.
+- **The patch** is a source transform (or module substitution) applied at load: DA1 probe, frame
+  provider, `Component.describe?`, plus the native backend modules.
+- **Costs.** Unbundled startup: `--version` 0.49 s vs 0.24 s bundled (module-load only; interactive
+  delta still to be measured). Keeping the transform in step with pi-tui internals.
 
-So the back-port can ship as:
+## Alternatives, ranked
 
-1. a `pi-tern` wrapper command that runs the **unbundled** entry
-   (`node --import <hook> …/dist/cli.js "$@"`), and
-2. a loader hook that resolves `@earendil-works/pi-tui` to a patched copy (vendored package or a
-   source transform), adding the probe, the frame-provider seam and `Component.describe()`.
-
-Verified facts / costs:
-
-- Unbundled `--version`: **0.49 s** vs bundled **0.24 s** (3/3 runs each) — module-load only; a real
-  session's delta needs its own measurement.
-- Core binaries stay untouched; a `pi update` replaces the package but the wrapper re-applies, and
-  the hook can version-gate (refuse to patch an unknown pi-tui layout rather than break).
-- The hook must keep pace with pi-tui internals; this is a maintenance burden, not a free lunch.
-
-## Recommendation order
-
-1. **Upstream PR** (probe + `setFrameProvider` + `Component.describe?`): additive, default-off; omp
-   already proved the design. Zero maintenance for us.
-2. **Wrapper + loader hook** (no binary edits): the pragmatic local route if upstream lags; pin the
-   pi-tui version, run the smoke + eval suite before every update.
-3. **Extension-only flow surfaces** for small widgets in the meantime; explicitly not parity.
-
-## Patch series outline (for either 1 or 2)
-
-- `terminal.ts`: DA1 sentinel owner + `onTspHello`/`tspProbePending`/`tspExpected`, APC/OSC-877.
-- `tui.ts` + screen classes: `setFrameProvider()`, native dispatch that suppresses ANSI frames.
-- `Component`: optional `describe(cx)`; rows fallback in the reconciler.
-- `native/*`: port encode/apply/reconcile/backend (omp, MIT) with Bun→Node shims.
-- coding-agent: composer/dock/transcript describe, `send`/`edit`/`undo`, palette, resume.
+1. **Wrapper + loader hook** — full surfaces, no binary edits, upstream updates keep flowing.
+2. **Sidecar TSP renderer over `pi --mode rpc`** — pi stays 100% stock; our renderer owns the pane;
+   update risk limited to the RPC protocol; the most work.
+3. **Minimal upstream seam** (a preload/renderer hook, ~100–300 LOC) — if accepted, the wrapper
+   disappears. The maintainers want pi light, so ask for a seam, not the port.
+4. **Downstream build** (fork + rebase + build) — full parity, but a rebuild per update.
+5. **Extension-side row re-encoding** (monkey-patch `tui.terminal.write` + a screen model) — partial,
+   CPU cost, no component semantics; last resort.

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.1 — 2026-10-06
+
+- Docs correction (no code changes): the loader hook reaches real pi-tui only through the **unbundled**
+  entry. Measured on managed pi 1.0.4: default launcher resolves pi-tui 16× and loads it **0×**
+  (inlined); `node …/dist/cli.js` loads it 44× and the hook transformed all 44, interactive included.
+  `docs/CORE-BACKPORT.md` rewritten with the wrapper design and ranked alternatives.
+
 ## 0.9.0 — 2026-10-06
 
 - **Adaptive mailbox** — 100 ms poll for 5 s after activity, 250 ms idle. Measured ping median **66 ms** (was 252), min 62, max 314.
