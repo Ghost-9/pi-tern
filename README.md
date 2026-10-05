@@ -106,13 +106,13 @@ Start a session mirror so I can read this conversation natively.
 sequenceDiagram
   participant P as pi + pi-tern
   participant T as Tern pane
-  P->>T: tsp;q hello {v:[1],app:"pi",features:[edit,undo,send]} + ESC [ c
-  T-->>P: tsp;r hello {v:1,kinds:[44],features:[10],credits:2}
-  T-->>P: DA1 ESC [ ?62;52;c
-  Note over P: probe confirmed
-  P->>T: tern open --split right diagram.md
-  P->>T: relay {"hello":{}} -> {"welcome":{}}, {"id":1,"browser":{op}}
-  T-->>P: {"id":1,"browser":{"ok":…}}
+  P->>T: TSP hello query plus DA1
+  T-->>P: TSP hello reply (v1, 44 kinds, 10 features, credits 2)
+  T-->>P: DA1 device attributes
+  Note over P: probe confirmed, Tern detected
+  P->>T: tern open diagram.md (merman renders it)
+  P->>T: daemon relay: hello, welcome, browser op
+  T-->>P: relay answer ok
 ```
 
 Three channels, kept separate:

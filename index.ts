@@ -36,7 +36,7 @@ import { readTernEnv, runTern, scratchDir } from "./lib/tern.ts";
 import { extractMermaids, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
 import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, type TspHello } from "./lib/tsp.ts";
 
-const PI_TERN_VERSION = "0.1.0";
+const PI_TERN_VERSION = "0.1.1";
 
 interface ProbeState {
 	status: "idle" | "pending" | "confirmed" | "absent" | "timeout";

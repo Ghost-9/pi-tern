@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1 — 2026-10-06
+
+- Docs: fix the Mermaid sequence diagrams in `README.md` and `docs/ARCHITECTURE.md`. GitHub's
+  renderer rejected the previous ones because `;` is a statement separator inside sequence
+  diagrams. No code changes.
+
 ## 0.1.0 — 2026-10-06
 
 Initial release.

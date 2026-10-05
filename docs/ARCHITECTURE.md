@@ -24,13 +24,13 @@ sequenceDiagram
   participant E as pi-tern
   participant P as pi TUI
   participant T as Tern
-  Note over E: session_start (TUI mode)
+  Note over E: session_start in TUI mode
   E->>P: ctx.ui.onTerminalInput(handler)
-  E->>T: process.stdout.write(hello + ESC [ c) after 1.2s
-  T-->>E: APC tsp;r hello (before the DA1)
-  T-->>E: ESC [ ?62;52;c
-  Note over E: probe.status = confirmed (hello cached)
-  T-->>E: ESC [ ?62;52;c only  %% => absent (no TSP)
+  E->>T: hello query plus DA1 after 1.2s
+  T-->>E: hello reply (before the DA1)
+  T-->>E: DA1 device attributes
+  Note over E: probe confirmed, hello cached
+  T-->>E: DA1 only -> no TSP, keep the ANSI renderer
 ```
 
 - The reply is read only through `ctx.ui.onTerminalInput`; TSP-looking input is consumed, DA1
