@@ -1,6 +1,6 @@
 {
 	"name": "pi-tern",
-	"version": "0.7.0",
+	"version": "0.8.0",
 	"description": "Tern integration for the pi coding agent: TSP handshake, native Mermaid diagrams, WKWebView browser automation, pane capture and a session mirror.",
 	"license": "MIT",
 	"author": "Mayank Batra",
@@ -32,7 +32,8 @@
 		"examples",
 		"README.md",
 		"LICENSE",
-		"CHANGELOG.md"
+		"CHANGELOG.md",
+		"scripts"
 	],
 	"pi": {
 		"extensions": [
@@ -47,7 +48,8 @@
 		"test:live": "node --experimental-strip-types --test test/live.test.ts",
 		"typecheck": "tsc --noEmit",
 		"lint": "oxlint index.ts lib test",
-		"coverage": "node --experimental-strip-types --test --experimental-test-coverage test/protocol.test.ts"
+		"coverage": "node --experimental-strip-types --test --experimental-test-coverage test/protocol.test.ts",
+		"bench": "node --experimental-strip-types scripts/bench.ts"
 	},
 	"engines": {
 		"node": ">=22.6.0"

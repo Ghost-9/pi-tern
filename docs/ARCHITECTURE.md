@@ -95,9 +95,15 @@ two files in the linked plugin directory:
 
 Ops: `system.ping`, `db.{tables,schema,query,exec}`, `doc.{read,outline,search,append,write,edit,newNote}`,
 `board.{read,add,move,check,addLane}`, `settings.{get,list,describe}`, `notebook.read`,
-`carly.{ask,schedule,tasks,cancel}`. Read-only by default for databases; writes require an explicit
-flag. Because the plugin polls, a live window keeps running the plugin code it started with — a
-Tern window restart picks up new plugin code (the extension checks `system.ping`).
+`carly.{ask,schedule,tasks,cancel}`, plus `batch` (an array of ops in one round trip).
+Read-only by default for databases; writes require an explicit flag. Responses carry the plugin
+version; a window still running old plugin code fails with a clear restart message. A best-effort
+claim file keeps two windows from running the same request, and a stale request older than 5 s is
+discarded. The plugin caches up to 8 SQLite handles and polls every 250 ms (the extension polls
+every 60 ms): measured median 252 ms per op, three batched ops in 251 ms.
+
+Prompt footprint: five direct tools and fourteen `deferred` tools (callable from codemode by name) —
+measured +1,309 tokens versus no extension, down from +3,679 when all tools were declared.
 
 ## What the extension deliberately does not do
 

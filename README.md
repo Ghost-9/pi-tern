@@ -128,6 +128,14 @@ Start a session mirror so I can read this conversation natively.
 | `PI_TERN_BRIDGE` | `1` | `0` skips the automatic pi-bridge link |
 | `PI_TERN_FORCE` | — | `1` tries Tern features outside a Tern pane |
 
+## Prompt footprint
+
+Only five tools are declared to the model — `tern_status`, `tern_run`, `tern_browser`, `tern_db`,
+`tern_diagram`. The other fourteen are `deferred`: they do not appear in the prompt and are callable
+from codemode scripts by name (the names are listed in `tern_status`). Measured cost of the whole
+extension: **+1,309 prompt tokens** (21,704 → 23,013), down from **+3,679** when every tool was
+declared. See [docs/BENCHMARKING.md](docs/BENCHMARKING.md).
+
 ## How it works
 
 ```mermaid
@@ -179,6 +187,8 @@ npm install                 # dev dependencies (typecheck only)
 npm test                    # protocol tests, no Tern required
 npm run test:live           # relay/browser test; needs a Tern pane
 npm run typecheck
+npm run lint
+npm run bench               # mailbox latency; needs a Tern pane with pi-bridge
 ```
 
 The extension itself has no runtime dependencies: Node builtins, pi's APIs and TypeBox schemas only.

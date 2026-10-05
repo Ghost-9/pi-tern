@@ -10,7 +10,7 @@ import { eventName, parseEventLine } from "../lib/events.ts";
 import { encodeFrame, RelayClient } from "../lib/relay.ts";
 import { buildDashboard, ensureBridge } from "../lib/bridge.ts";
 import { runShellInTern } from "../lib/run.ts";
-import { mailbox } from "../lib/mailbox.ts";
+import { mailbox, mailboxBatch, EXPECTED_PLUGIN_VERSION } from "../lib/mailbox.ts";
 import { extractMermaids, messageText, renderMessageMarkdown, summarizeArgs, cleanShellBlock, extractShellBlocks } from "../lib/text.ts";
 import { writeDiagram } from "../lib/diagram.ts";
 
@@ -217,7 +217,7 @@ test("mailbox round-trips through a simulated plugin", async () => {
 	const watcher = setInterval(() => {
 		try {
 			const request = JSON.parse(readFileSync(requestFile, "utf8")) as { id?: string };
-			writeFileSync(responseFile, JSON.stringify({ id: request.id, ok: true, result: { pong: true } }));
+			writeFileSync(responseFile, JSON.stringify({ id: request.id, ok: true, v: EXPECTED_PLUGIN_VERSION, result: { pong: true } }));
 		} catch {
 			/* request not written yet */
 		}
@@ -226,6 +226,68 @@ test("mailbox round-trips through a simulated plugin", async () => {
 		const result = await pending;
 		assert.equal(result.ok, true);
 		assert.deepEqual(result.result, { pong: true });
+	} finally {
+		clearInterval(watcher);
+		process.env.HOME = oldHome;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("mailbox reports a stale plugin version", async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), "pi-tern-mbv-"));
+	const oldHome = process.env.HOME;
+	process.env.HOME = dir;
+	const requestFile = path.join(dir, ".pi", "agent", "scratch", "pi-tern", "pi-bridge", "request.json");
+	const responseFile = path.join(dir, ".pi", "agent", "scratch", "pi-tern", "pi-bridge", "response.json");
+	const pending = mailbox("system.ping", {}, 4000);
+	const watcher = setInterval(() => {
+		try {
+			const request = JSON.parse(readFileSync(requestFile, "utf8")) as { id?: string };
+			writeFileSync(responseFile, JSON.stringify({ id: request.id, ok: true, v: "0.1.0", result: {} }));
+		} catch {
+			/* not yet */
+		}
+	}, 100);
+	try {
+		const result = await pending;
+		assert.equal(result.ok, false);
+		assert.match(String(result.error), /restart/);
+	} finally {
+		clearInterval(watcher);
+		process.env.HOME = oldHome;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("mailboxBatch round-trips several ops in one request", async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), "pi-tern-mbb-"));
+	const oldHome = process.env.HOME;
+	process.env.HOME = dir;
+	const requestFile = path.join(dir, ".pi", "agent", "scratch", "pi-tern", "pi-bridge", "request.json");
+	const responseFile = path.join(dir, ".pi", "agent", "scratch", "pi-tern", "pi-bridge", "response.json");
+	const pending = mailboxBatch([{ op: "system.ping" }, { op: "settings.get", args: { key: "theme" } }], 5000);
+	const watcher = setInterval(() => {
+		try {
+			const request = JSON.parse(readFileSync(requestFile, "utf8")) as { id?: string; args?: { ops?: unknown[] } };
+			assert.equal(request.args?.ops?.length, 2);
+			writeFileSync(
+				responseFile,
+				JSON.stringify({
+					id: request.id,
+					ok: true,
+					v: EXPECTED_PLUGIN_VERSION,
+					result: { results: [{ ok: true, result: { pong: true } }, { ok: true, result: { value: "System" } }] },
+				}),
+			);
+		} catch {
+			/* not yet */
+		}
+	}, 100);
+	try {
+		const result = await pending;
+		assert.equal(result.ok, true);
+		assert.equal(result.results?.length, 2);
+		assert.deepEqual(result.results?.[1]?.result, { value: "System" });
 	} finally {
 		clearInterval(watcher);
 		process.env.HOME = oldHome;

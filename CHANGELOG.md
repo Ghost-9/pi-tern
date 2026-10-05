@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0 — 2026-10-06
+
+- **Prompt footprint −64 %** — only five tools are declared to the model (`tern_status`, `tern_run`, `tern_browser`, `tern_db`, `tern_diagram`); the other fourteen are `deferred` and callable from codemode scripts by name (listed in `tern_status`). Measured: **+1,309** prompt tokens (21,704 → 23,013) vs **+3,679** in 0.7.0. A real codemode call to a deferred tool was verified.
+- **Mailbox throughput** — plugin poll 400 → 250 ms, extension poll 120 → 60 ms, plus `mailboxBatch` for several ops per round trip. Measured: ping median **730 → 252 ms**; three ops in **251 ms**.
+- **Reliability** — per-response plugin-version assertion (a stale window fails with “restart the Tern window”), best-effort single-owner claim, stale-request TTL, and a SQLite handle cache (8 entries).
+- **Benchmarks in-repo** — `scripts/bench.ts` and `docs/BENCHMARKING.md`.
+- 18 protocol tests (batch and stale-version coverage).
+
 ## 0.7.0 — 2026-10-06
 
 - **Settings** — `tern_settings` / `/tern settings get|list|describe <key>` through `cx.settings` (type, enum, range, default, docs).

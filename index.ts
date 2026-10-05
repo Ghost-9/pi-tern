@@ -43,7 +43,7 @@ import { insideMultiplexer, readTernEnv, runTern, scratchDir, type TernEnv } fro
 import { cleanShellBlock, extractMermaids, extractShellBlocks, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
 import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, normalizeOsc877, type TspHello } from "./lib/tsp.ts";
 
-const PI_TERN_VERSION = "0.7.0";
+const PI_TERN_VERSION = "0.8.0";
 
 interface ProbeState {
 	status: "idle" | "pending" | "confirmed" | "absent" | "timeout" | "skipped";
@@ -441,7 +441,7 @@ export default function piTern(pi: ExtensionAPI) {
 		name: "tern_status",
 		label: "Tern status",
 		description:
-			"Report whether pi runs inside Tern, the pane ids, the TSP hello reply (kinds, features, credits), the last mermaid seen, and the mirror state. Use before tern_diagram / tern_browser / tern_capture.",
+			"Report whether pi runs inside Tern, the pane ids, the TSP hello reply (kinds, features, credits), the last mermaid seen, and the mirror state. More Tern tools are callable from codemode scripts by name (ctx.tools): tern_capture, tern_panes, tern_ctl, tern_mirror, tern_watch, tern_diagnose, tern_shot, tern_remote, tern_bridge, tern_doc, tern_board, tern_carly, tern_notebook, tern_settings.",
 		parameters: Type.Object({}),
 		async execute() {
 			const env = readTernEnv();
@@ -1140,31 +1140,39 @@ export default function piTern(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool(statusTool);
-	pi.registerTool(diagramTool);
-	pi.registerTool(browserTool);
-	pi.registerTool(captureTool);
-	pi.registerTool(panesTool);
-	pi.registerTool(ctlTool);
-	pi.registerTool(mirrorTool);
-	pi.registerTool(watchTool);
-	pi.registerTool(diagnoseTool);
-	pi.registerTool(runTool);
-	pi.registerTool(shotTool);
-	pi.registerTool(remoteTool);
-	pi.registerTool(bridgeTool);
-	pi.registerTool(dbTool);
-	pi.registerTool(docTool);
-	pi.registerTool(boardTool);
-	pi.registerTool(carlyTool);
-	pi.registerTool(notebookTool);
-	pi.registerTool(settingsTool);
+	// Prompt-footprint optimization: only the high-frequency core is declared to the
+	// model; everything else is reachable from codemode scripts under one namespace.
+	const directTools = new Set(["tern_status", "tern_run", "tern_browser", "tern_db", "tern_diagram"]);
+	const ternNamespace = { name: "tern", description: "Tern terminal integration (sessions, browser, data, mirrors)." };
+	for (const tool of [
+		statusTool,
+		diagramTool,
+		browserTool,
+		captureTool,
+		panesTool,
+		ctlTool,
+		mirrorTool,
+		watchTool,
+		diagnoseTool,
+		runTool,
+		shotTool,
+		remoteTool,
+		bridgeTool,
+		dbTool,
+		docTool,
+		boardTool,
+		carlyTool,
+		notebookTool,
+		settingsTool,
+	]) {
+		const name = (tool as { name?: string }).name ?? "";
+		pi.registerTool(directTools.has(name) ? tool : ({ ...tool, exposure: "deferred", namespace: ternNamespace } as unknown as typeof tool));
+	}
 
 	// ── Command ────────────────────────────────────────────────────────────
 
 	pi.registerCommand("tern", {
-		description:
-			"Tern integration: status | diagnose | restore | control [window|headless] | run [--last] <cmd> | bridge install|refresh|status | db <path> <sql> | doc <action> <path> [text] | board read <path> | ask|remember|recall <text> | schedule <when> | <title> | tasks | cancel <id> | settings get|list|describe <key> | notebook read <pane> | title | bell | diagram [--last] [--pin] <mermaid> | mirror on|off|open|status | browser <json> | capture [block] | panes",
+		description: "Tern integration: status | db | doc | board | run | ask | schedule | bridge | mirror | diagram | browser | settings",
 		handler: async (args: string, ctx: any) => {
 			const trimmed = (args ?? "").trim();
 			const [sub = "status"] = trimmed.split(/\s+/);
