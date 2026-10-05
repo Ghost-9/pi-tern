@@ -12,6 +12,8 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,9 +23,9 @@ jobs:
       - name: Protocol tests
         run: node --test test/protocol.test.ts
       - name: Publish to npm
-        # Configure either an NPM_TOKEN secret or npm trusted publishing for this repo.
-        # Without a token the step is skipped so the workflow stays green.
-        if: ${{ secrets.NPM_TOKEN != '' }}
+        # Runs when an NPM_TOKEN secret exists (token with publish rights) or when the
+        # repository variable PUBLISH_NPM is "true" (npm trusted publishing / OIDC).
+        if: ${{ env.NPM_TOKEN != '' || vars.PUBLISH_NPM == 'true' }}
         run: npm publish --access public --provenance
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}
