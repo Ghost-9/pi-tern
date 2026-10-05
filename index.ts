@@ -35,6 +35,7 @@ import { bootstrapControl, capturePane, controlCommand, listPanes, remoteHosts, 
 import { openDiagram, writeDiagram, type DiagramPlacement } from "./lib/diagram.ts";
 import { waitForEvent } from "./lib/events.ts";
 import { bridgeDir, buildDashboard, ensureBridge, linkBridge, writeDashboard } from "./lib/bridge.ts";
+import { mailbox } from "./lib/mailbox.ts";
 import { relayPing } from "./lib/relay.ts";
 import { runShellInTern } from "./lib/run.ts";
 import { loadState, saveState } from "./lib/state.ts";
@@ -42,7 +43,7 @@ import { insideMultiplexer, readTernEnv, runTern, scratchDir, type TernEnv } fro
 import { cleanShellBlock, extractMermaids, extractShellBlocks, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
 import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, normalizeOsc877, type TspHello } from "./lib/tsp.ts";
 
-const PI_TERN_VERSION = "0.4.0";
+const PI_TERN_VERSION = "0.7.0";
 
 interface ProbeState {
 	status: "idle" | "pending" | "confirmed" | "absent" | "timeout" | "skipped";
@@ -943,6 +944,202 @@ export default function piTern(pi: ExtensionAPI) {
 		},
 	});
 
+	const dbTool = defineTool({
+		name: "tern_db",
+		label: "Tern database",
+		description:
+			"SQLite through Tern's own engine. Actions: tables {path}, schema {path, table}, query {path, sql, limit}, exec {path, sql, allowWrite:true}. Read-only unless allowWrite is true.",
+		parameters: Type.Object({
+			action: Type.Union([Type.Literal("tables"), Type.Literal("schema"), Type.Literal("query"), Type.Literal("exec")]),
+			path: Type.String({ description: "Absolute path to a SQLite file" }),
+			table: Type.Optional(Type.String()),
+			sql: Type.Optional(Type.String()),
+			limit: Type.Optional(Type.Number()),
+			allowWrite: Type.Optional(Type.Boolean({ description: "exec only: open read-write" })),
+			timeoutSeconds: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params) {
+			const result = await mailbox(
+				`db.${params.action}`,
+				{
+					path: params.path,
+					table: params.table,
+					sql: params.sql,
+					limit: params.limit,
+					allowWrite: params.allowWrite === true,
+				},
+				(params.timeoutSeconds ?? 15) * 1000,
+			);
+			return asText(JSON.stringify(result, null, 2));
+		},
+	});
+
+	const docTool = defineTool({
+		name: "tern_doc",
+		label: "Tern document",
+		description:
+			"Read and edit Tern documents through cx.docs, including unsaved edits. Actions: read {path, from?, lines?}, outline {path}, search {path, query}, append {path, text}, write {path, text}, newNote {title, text}.",
+		parameters: Type.Object({
+			action: Type.Union([
+				Type.Literal("read"),
+				Type.Literal("outline"),
+				Type.Literal("search"),
+				Type.Literal("append"),
+				Type.Literal("write"),
+				Type.Literal("newNote"),
+				Type.Literal("edit"),
+			]),
+			path: Type.Optional(Type.String()),
+			text: Type.Optional(Type.String()),
+			query: Type.Optional(Type.String()),
+			title: Type.Optional(Type.String()),
+			from: Type.Optional(Type.Number()),
+			lines: Type.Optional(Type.Number()),
+			find: Type.Optional(Type.String()),
+			replace: Type.Optional(Type.String()),
+			all: Type.Optional(Type.Boolean()),
+			line: Type.Optional(Type.Number()),
+			insert: Type.Optional(Type.String()),
+			heading: Type.Optional(Type.String()),
+			append: Type.Optional(Type.String()),
+			timeoutSeconds: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params) {
+			const result = await mailbox(
+				`doc.${params.action}`,
+				{
+					path: params.path,
+					text: params.text,
+					query: params.query,
+					title: params.title,
+					from: params.from,
+					lines: params.lines,
+					find: params.find,
+					replace: params.replace,
+					all: params.all,
+					line: params.line,
+					insert: params.insert,
+					heading: params.heading,
+					append: params.append,
+				},
+				(params.timeoutSeconds ?? 15) * 1000,
+			);
+			return asText(JSON.stringify(result, null, 2));
+		},
+	});
+
+	const boardTool = defineTool({
+		name: "tern_board",
+		label: "Tern board",
+		description:
+			"Read and edit a native Tern board (task/Kanban Markdown). Actions: read {board, rows?}, add {board, lane, text, tags?, due?}, move {card, lane, position?}, check {card, done}, addLane {board, title, position?}.",
+		parameters: Type.Object({
+			action: Type.Union([
+				Type.Literal("read"),
+				Type.Literal("add"),
+				Type.Literal("move"),
+				Type.Literal("check"),
+				Type.Literal("addLane"),
+			]),
+			board: Type.Optional(Type.String({ description: "Board Markdown path or pane id" })),
+			lane: Type.Optional(Type.String()),
+			text: Type.Optional(Type.String()),
+			card: Type.Optional(Type.String()),
+			done: Type.Optional(Type.Boolean()),
+			tags: Type.Optional(Type.Array(Type.String())),
+			due: Type.Optional(Type.String({ description: "YYYY-MM-DD" })),
+			position: Type.Optional(Type.Number()),
+			rows: Type.Optional(Type.Number()),
+			timeoutSeconds: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params) {
+			const result = await mailbox(
+				`board.${params.action}`,
+				{
+					board: params.board,
+					lane: params.lane,
+					text: params.text,
+					card: params.card,
+					done: params.done,
+					tags: params.tags,
+					due: params.due,
+					position: params.position,
+					rows: params.rows,
+				},
+				(params.timeoutSeconds ?? 15) * 1000,
+			);
+			return asText(JSON.stringify(result, null, 2));
+		},
+	});
+
+	const carlyTool = defineTool({
+		name: "tern_carly",
+		label: "Tern Carly",
+		description:
+			"Tern's built-in assistant Carly. Actions: ask {text} (opens Carly with a question), schedule {title, when?, on?, prompt?}, tasks, cancel {id}. Carly routes through its own model providers: never send vault, Apple Notes or secret material.",
+		parameters: Type.Object({
+			action: Type.Union([Type.Literal("ask"), Type.Literal("schedule"), Type.Literal("tasks"), Type.Literal("cancel")]),
+			text: Type.Optional(Type.String()),
+			title: Type.Optional(Type.String()),
+			when: Type.Optional(Type.String({ description: "\"every 30m\", \"daily 09:00\", \"weekdays 09:00\", …" })),
+			on: Type.Optional(Type.String({ description: "Event trigger: command_finished, pane_closed, …" })),
+			prompt: Type.Optional(Type.String()),
+			id: Type.Optional(Type.Number()),
+			timeoutSeconds: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params) {
+			const result = await mailbox(
+				`carly.${params.action}`,
+				{
+					text: params.text,
+					title: params.title,
+					when: params.when,
+					on: params.on,
+					prompt: params.prompt,
+					id: params.id,
+				},
+				(params.timeoutSeconds ?? 15) * 1000,
+			);
+			return asText(JSON.stringify(result, null, 2));
+		},
+	});
+
+	const notebookTool = defineTool({
+		name: "tern_notebook",
+		label: "Tern notebook",
+		description:
+			"Read an open Tern notebook block's cells and outputs (path, kernel, cells with source/output MIME). Execution is not exposed by the plugin API; drive it in Tern's UI.",
+		parameters: Type.Object({
+			pane: Type.Number({ description: "Notebook block id (from tern_panes)" }),
+			timeoutSeconds: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params) {
+			const result = await mailbox("notebook.read", { pane: params.pane }, (params.timeoutSeconds ?? 15) * 1000);
+			return asText(JSON.stringify(result, null, 2));
+		},
+	});
+
+	const settingsTool = defineTool({
+		name: "tern_settings",
+		label: "Tern settings",
+		description:
+			"Read Tern's preferences through cx.settings. Actions: get {key}, list {prefix?}, describe {key} (type, enum, range, default, doc).",
+		parameters: Type.Object({
+			action: Type.Union([Type.Literal("get"), Type.Literal("list"), Type.Literal("describe")]),
+			key: Type.Optional(Type.String()),
+			prefix: Type.Optional(Type.String()),
+			timeoutSeconds: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params) {
+			const result = await mailbox(
+				`settings.${params.action}`,
+				{ key: params.key, prefix: params.prefix },
+				(params.timeoutSeconds ?? 15) * 1000,
+			);
+			return asText(JSON.stringify(result, null, 2));
+		},
+	});
+
 	pi.registerTool(statusTool);
 	pi.registerTool(diagramTool);
 	pi.registerTool(browserTool);
@@ -956,12 +1153,18 @@ export default function piTern(pi: ExtensionAPI) {
 	pi.registerTool(shotTool);
 	pi.registerTool(remoteTool);
 	pi.registerTool(bridgeTool);
+	pi.registerTool(dbTool);
+	pi.registerTool(docTool);
+	pi.registerTool(boardTool);
+	pi.registerTool(carlyTool);
+	pi.registerTool(notebookTool);
+	pi.registerTool(settingsTool);
 
 	// ── Command ────────────────────────────────────────────────────────────
 
 	pi.registerCommand("tern", {
 		description:
-			"Tern integration: status | diagnose | restore | control [window|headless] | run [--last] <cmd> | bridge install|refresh|status | title | bell | diagram [--last] [--pin] <mermaid> | mirror on|off|open|status | browser <json> | capture [block] | panes",
+			"Tern integration: status | diagnose | restore | control [window|headless] | run [--last] <cmd> | bridge install|refresh|status | db <path> <sql> | doc <action> <path> [text] | board read <path> | ask|remember|recall <text> | schedule <when> | <title> | tasks | cancel <id> | settings get|list|describe <key> | notebook read <pane> | title | bell | diagram [--last] [--pin] <mermaid> | mirror on|off|open|status | browser <json> | capture [block] | panes",
 		handler: async (args: string, ctx: any) => {
 			const trimmed = (args ?? "").trim();
 			const [sub = "status"] = trimmed.split(/\s+/);
@@ -1134,6 +1337,135 @@ export default function piTern(pi: ExtensionAPI) {
 						} else {
 							ctx.ui.notify(`mirror: ${mirrorEnabled ? "on" : "off"} (${mirrorFile()})`, "info");
 						}
+						return;
+					}
+					case "db": {
+						const parts = trimmed.split(/\s+/);
+						const dbPath = parts[1];
+						const sql = dbPath ? trimmed.slice(trimmed.indexOf(dbPath) + dbPath.length).trim() : "";
+						if (!dbPath || !sql) {
+							ctx.ui.notify("usage: /tern db <path> <sql>", "warning");
+							return;
+						}
+						const result = await mailbox("db.query", { path: dbPath, sql, limit: 200 }, 15000);
+						ctx.ui.notify(JSON.stringify(result).slice(0, 2000), result.ok ? "info" : "error");
+						return;
+					}
+					case "doc": {
+						const parts = trimmed.split(/\s+/);
+						const action = parts[1] ?? "read";
+						const docPath = parts[2];
+						if (!docPath) {
+							ctx.ui.notify("usage: /tern doc <read|outline|search> <path> [text]", "warning");
+							return;
+						}
+						const text = trimmed.slice(trimmed.indexOf(docPath) + docPath.length).trim();
+						const result = await mailbox(`doc.${action}`, { path: docPath, text }, 15000);
+						ctx.ui.notify(JSON.stringify(result).slice(0, 2000), result.ok ? "info" : "error");
+						return;
+					}
+					case "board": {
+						const parts = trimmed.split(/\s+/);
+						const action = parts[1] ?? "read";
+						const boardPath = parts[2];
+						if (!boardPath) {
+							ctx.ui.notify("usage: /tern board read <path>  |  /tern board add <path> <lane> <text>", "warning");
+							return;
+						}
+						if (action === "add") {
+							const lane = parts[3] ?? "";
+							const text = trimmed.slice(trimmed.indexOf(lane) + lane.length).trim();
+							const result = await mailbox("board.add", { board: boardPath, lane, text }, 15000);
+							ctx.ui.notify(JSON.stringify(result).slice(0, 2000), result.ok ? "info" : "error");
+							return;
+						}
+						const result = await mailbox(`board.${action}`, { board: boardPath }, 15000);
+						ctx.ui.notify(JSON.stringify(result).slice(0, 2000), result.ok ? "info" : "error");
+						return;
+					}
+					case "ask":
+					case "remember":
+					case "recall": {
+						const rest = trimmed.slice(sub.length).trim();
+						if (!rest) {
+							ctx.ui.notify(`usage: /tern ${sub} <text>`, "warning");
+							return;
+						}
+						const prefix =
+							sub === "remember"
+								? "Remember this for later (concise): "
+								: sub === "recall"
+									? "Search your memory and answer: "
+									: "";
+						const result = await mailbox("carly.ask", { text: prefix + rest }, 15000);
+						ctx.ui.notify(
+							result.ok
+								? "asked Carly (the answer appears in Carly; Carly uses remote providers — never send vault or secret content)"
+								: String(result.error),
+							result.ok ? "info" : "error",
+						);
+						return;
+					}
+					case "schedule": {
+						const rest = trimmed.slice(sub.length).trim();
+						if (!rest) {
+							ctx.ui.notify("usage: /tern schedule <when> | <title>", "warning");
+							return;
+						}
+						const [when, title] = rest.split("|").map((part) => part.trim());
+						const result = await mailbox(
+							"carly.schedule",
+							{ when, title: title || "pi-tern task", prompt: title || "pi-tern task" },
+							15000,
+						);
+						ctx.ui.notify(JSON.stringify(result).slice(0, 1200), result.ok ? "info" : "error");
+						return;
+					}
+					case "tasks": {
+						const result = await mailbox("carly.tasks", {}, 15000);
+						const tasks = (result.result as { tasks?: unknown[] } | undefined)?.tasks ?? [];
+						ctx.ui.notify(
+							{
+								tasks: tasks.map((task) => {
+									const t = task as { id?: number; title?: string; next?: string; paused?: boolean };
+									return `#${t.id} ${t.title ?? ""}${t.next ? ` · next ${t.next}` : ""}${t.paused ? " · paused" : ""}`;
+								}),
+							}
+								.tasks.slice(0, 10)
+								.join("\n") || "(no tasks)",
+							"info",
+						);
+						return;
+					}
+					case "cancel": {
+						const id = Number(trimmed.split(/\s+/)[1]);
+						if (!Number.isFinite(id) || id < 0) {
+							ctx.ui.notify("usage: /tern cancel <id>", "warning");
+							return;
+						}
+						const result = await mailbox("carly.cancel", { id }, 15000);
+						ctx.ui.notify(JSON.stringify(result).slice(0, 600), result.ok ? "info" : "error");
+						return;
+					}
+					case "settings": {
+						const parts = trimmed.split(/\s+/);
+						const action = parts[1] ?? "get";
+						const key = parts[2] ?? "";
+						const result =
+							action === "list"
+								? await mailbox("settings.list", { prefix: key || undefined }, 15000)
+								: await mailbox(`settings.${action}`, { key }, 15000);
+						ctx.ui.notify(JSON.stringify(result).slice(0, 2000), result.ok ? "info" : "error");
+						return;
+					}
+					case "notebook": {
+						const pane = Number(trimmed.split(/\s+/)[2]);
+						if (!Number.isFinite(pane)) {
+							ctx.ui.notify("usage: /tern notebook read <pane>", "warning");
+							return;
+						}
+						const result = await mailbox("notebook.read", { pane }, 15000);
+						ctx.ui.notify(JSON.stringify(result).slice(0, 2000), result.ok ? "info" : "error");
 						return;
 					}
 					case "bridge": {

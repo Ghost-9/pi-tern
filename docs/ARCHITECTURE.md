@@ -84,6 +84,21 @@ sequenceDiagram
   reopens the mirror and the last pinned diagram. On session start the mirror restarts when
   `PI_TERN_MIRROR=1` or the persisted preference says it was on.
 
+## Mailbox (extension ↔ plugin data plane)
+
+The pi-bridge plugin runs in Tern's window VM; the extension runs in pi. They communicate over
+two files in the linked plugin directory:
+
+1. the extension writes `request.json` (`{id, op, args}`);
+2. the plugin's 400 ms timer reads it, executes the `cx.*` operation and writes `response.json`;
+3. the extension polls for the matching `id` and returns the result (timeout with guidance).
+
+Ops: `system.ping`, `db.{tables,schema,query,exec}`, `doc.{read,outline,search,append,write,edit,newNote}`,
+`board.{read,add,move,check,addLane}`, `settings.{get,list,describe}`, `notebook.read`,
+`carly.{ask,schedule,tasks,cancel}`. Read-only by default for databases; writes require an explicit
+flag. Because the plugin polls, a live window keeps running the plugin code it started with — a
+Tern window restart picks up new plugin code (the extension checks `system.ping`).
+
 ## What the extension deliberately does not do
 
 pi 1.0.3 / `@earendil-works/pi-tui` expose no frame-provider seam, and their ANSI frames are

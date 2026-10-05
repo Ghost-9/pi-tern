@@ -1,7 +1,7 @@
 // Protocol and helper tests. No Tern required; runs anywhere with Node >= 22.6.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync, mkdtempSync, writeFileSync } from "node:fs";
+import { rmSync, mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +10,7 @@ import { eventName, parseEventLine } from "../lib/events.ts";
 import { encodeFrame, RelayClient } from "../lib/relay.ts";
 import { buildDashboard, ensureBridge } from "../lib/bridge.ts";
 import { runShellInTern } from "../lib/run.ts";
+import { mailbox } from "../lib/mailbox.ts";
 import { extractMermaids, messageText, renderMessageMarkdown, summarizeArgs, cleanShellBlock, extractShellBlocks } from "../lib/text.ts";
 import { writeDiagram } from "../lib/diagram.ts";
 
@@ -202,6 +203,32 @@ esac
 		assert.equal(result.timedOut, false);
 	} finally {
 		process.env.PATH = oldPath;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("mailbox round-trips through a simulated plugin", async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), "pi-tern-mb-"));
+	const oldHome = process.env.HOME;
+	process.env.HOME = dir;
+	const requestFile = path.join(dir, ".pi", "agent", "scratch", "pi-tern", "pi-bridge", "request.json");
+	const responseFile = path.join(dir, ".pi", "agent", "scratch", "pi-tern", "pi-bridge", "response.json");
+	const pending = mailbox("system.ping", {}, 5000);
+	const watcher = setInterval(() => {
+		try {
+			const request = JSON.parse(readFileSync(requestFile, "utf8")) as { id?: string };
+			writeFileSync(responseFile, JSON.stringify({ id: request.id, ok: true, result: { pong: true } }));
+		} catch {
+			/* request not written yet */
+		}
+	}, 100);
+	try {
+		const result = await pending;
+		assert.equal(result.ok, true);
+		assert.deepEqual(result.result, { pong: true });
+	} finally {
+		clearInterval(watcher);
+		process.env.HOME = oldHome;
 		rmSync(dir, { recursive: true, force: true });
 	}
 });

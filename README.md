@@ -27,6 +27,9 @@ It never writes TSP frames, so pi's renderer is not disturbed. Native Tern surfa
 | Mermaid diagrams | stable | `tern_diagram` / `/tern diagram` opens a file block rendered by Tern's merman engine. `--last` uses the newest fence in the conversation; `pin` keeps one path so re-renders update the same block |
 | Runnable shell blocks | stable | `tern_run` / `/tern run [--last]` runs a bash/sh command from the conversation in a visible Tern pane, waits for exit and returns the captured output (`PI_TERN_RUN=0` disables) |
 | Session mirror | stable | `/tern mirror on` writes this conversation to `session-mirror.md` and opens it as a Tern block; a session TOC, timestamps and tool lines are included, and Mermaid inside it renders natively |
+| Data plane | stable | `tern_db` (SQLite read-only by default), `tern_doc` (live documents, unsaved edits, heading-aware edits), `tern_board` (native task board lanes/cards) through Tern's own window APIs via the pi-bridge mailbox |
+| Carly integration | stable | `tern_carly` + `/tern ask\|remember\|recall\|schedule\|tasks\|cancel`; a `pi_tern()` export lets Carly read pi's status. Carly uses remote providers: never send vault/secret material |
+| Notebooks & settings | experimental | `tern_notebook read <pane>` for open notebook blocks (execution not exposed by Tern 0.4.5); `tern_settings get\|list\|describe` |
 | Tern browser | stable | `tern_browser` drives Tern's WKWebView picture-in-picture: `open`, `state`, `snapshot`, `act`, `eval`, `capture` (returns an image), `input`, `goto`, `nav`, `events`, `close` |
 | Pane inspection | stable | `tern_capture` (text, ANSI, HTML, scrollback, surfaces), `tern_panes`, `tern_ctl` |
 | Pane events | stable | `tern_watch` waits for daemon events (`pane_exited`, …) with an optional pane filter, so pi can wait for a test run or server instead of polling |
@@ -82,6 +85,13 @@ Commands:
 /tern doctor                  probe result, hello kinds, features, credits
 /tern diagnose                environment, relay and control diagnostics
 /tern run [--last] <command>  run a shell command in a visible Tern pane
+/tern db <path> <sql>        query SQLite through Tern's engine (read-only)
+/tern doc <action> <path>    read/outline/search/append/write a Tern document
+/tern board read <path>      read a native Tern board
+/tern ask|remember|recall <text>   talk to Carly (remote providers; no vault content)
+/tern schedule <when> | <title> · tasks · cancel <id>
+/tern settings get|list|describe <key>
+/tern notebook read <pane>
 /tern restore                 reopen the mirror and the last pinned diagram
 /tern control [window|headless]  start a control endpoint for tern_ctl
 /tern bridge install|refresh|status  install the pi-bridge Tern canvas
@@ -94,7 +104,7 @@ Commands:
 /tern title | bell            apply the title, or ring the bell once
 ```
 
-Model-callable tools: `tern_status`, `tern_diagram`, `tern_browser`, `tern_capture`, `tern_panes`, `tern_ctl`, `tern_mirror`, `tern_watch`, `tern_diagnose`, `tern_run`, `tern_shot`, `tern_remote`, `tern_bridge`.
+Model-callable tools: `tern_status`, `tern_diagram`, `tern_browser`, `tern_capture`, `tern_panes`, `tern_ctl`, `tern_mirror`, `tern_watch`, `tern_diagnose`, `tern_run`, `tern_shot`, `tern_remote`, `tern_bridge`, `tern_db`, `tern_doc`, `tern_board`, `tern_carly`, `tern_notebook`, `tern_settings`.
 
 Examples:
 
@@ -149,6 +159,8 @@ Three channels, kept separate:
 - **Browser capture needs a rendered picture-in-picture.** Tern answers `capture: a 0×0 px image is out of range` while the PiP is not visible (window or tab not frontmost).
 - **`tern_ctl` needs a control endpoint.** Run `/tern control` (headless by default) or launch Tern with `--control EP` / set `TERN_WINDOW_SOCKET`.
 - **The pi-bridge canvas is experimental.** The plugin loads and binds its chord (verified in Tern's log and `plugin list`), but the Luau canvas rendering itself has not been visually verified from CI.
+- **Mailbox latency** is one plugin poll (~0.25–0.75 s per call); DB access is read-only unless `exec` is explicitly allowed; `agent.db`-style stores hold credentials, so pass explicit paths and never select secret columns.
+- **Notebook execution is not exposed** by Tern's plugin API on 0.4.5; `tern_notebook` only reads open notebook blocks.
 
 ## Security
 

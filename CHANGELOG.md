@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.0 — 2026-10-06
+
+- **Settings** — `tern_settings` / `/tern settings get|list|describe <key>` through `cx.settings` (type, enum, range, default, docs).
+- **Notebooks** — `tern_notebook read <pane>` reads an open Tern notebook block's cells and outputs via `cx.session:read`. Execution is not exposed by the plugin API on 0.4.5; drive it in Tern's UI.
+- **Documents** — `doc.edit` gains all three shapes: `{find, replace, all?}`, `{line, insert}` (insert at the line start; include `\n` for a new line) and `{heading, append}`.
+
+## 0.6.0 — 2026-10-06
+
+- **Carly** — `tern_carly` and `/tern ask|remember|recall|schedule|tasks|cancel`. `ask` opens Carly with a question (`cx:ask_carly`); schedules use `tern.carly.schedule` (`every 30m`, `daily 09:00`, event triggers); a `pi_tern()` export is registered so Carly can read pi's status.
+- **Privacy** — Carly routes through remote providers; the tool and commands warn never to send vault, Apple Notes or secret material.
+
+## 0.5.0 — 2026-10-06
+
+- **Tern data plane** — a request/response mailbox between the extension and the pi-bridge plugin (request.json → plugin timer → response.json). One operation at a time, ~0.25–0.75 s.
+- **SQLite** — `tern_db` (tables, schema, query) through `cx.db`, read-only unless `exec` is explicitly allowed.
+- **Documents** — `tern_doc` reads live buffers (including unsaved edits), outlines, searches, appends and writes.
+- **Boards** — `tern_board` reads and edits a native Tern board (lanes, cards, move/check).
+
 ## 0.4.0 — 2026-10-06
 
 - **One install** — pi-tern links the pi-bridge canvas plugin automatically on the first Tern session (`PI_TERN_BRIDGE=0` disables); installing pi-tern is enough. The dashboard gains a session TOC and recent-activity sections.
