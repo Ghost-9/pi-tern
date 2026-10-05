@@ -17,3 +17,26 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - name: Protocol tests (no Tern required)
         run: node --experimental-strip-types --test test/protocol.test.ts
+
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Coverage (protocol tests)
+        run: node --experimental-strip-types --test --experimental-test-coverage test/protocol.test.ts

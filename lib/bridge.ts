@@ -16,6 +16,8 @@ export interface DashboardData {
 	lastDiagram?: string;
 	lastShell?: string;
 	browserTabs: number[];
+	toc?: string[];
+	recent?: string[];
 	now?: Date;
 }
 
@@ -25,6 +27,8 @@ export function bridgeDir(): string {
 
 export function buildDashboard(data: DashboardData): string {
 	const time = (data.now ?? new Date()).toISOString().slice(11, 19);
+	const toc = (data.toc ?? []).slice(-10);
+	const recent = (data.recent ?? []).slice(-6);
 	return [
 		"# π · pi-tern",
 		"",
@@ -38,6 +42,12 @@ export function buildDashboard(data: DashboardData): string {
 		`| last diagram | ${data.lastDiagram ?? "—"} |`,
 		`| last shell | ${data.lastShell ?? "—"} |`,
 		`| browser tabs | ${data.browserTabs.length > 0 ? data.browserTabs.join(", ") : "—"} |`,
+		"",
+		"## Session",
+		...(toc.length > 0 ? toc.map((entry) => `- ${entry}`) : ["- —"]),
+		"",
+		"## Recent activity",
+		...(recent.length > 0 ? recent.map((entry) => `- ${entry}`) : ["- —"]),
 		"",
 		"```mermaid",
 		"flowchart LR",
@@ -72,4 +82,33 @@ export async function linkBridge(): Promise<{ dir: string; linkCode: number; rel
 	const link = await runTern(["plugin", "link", dir], 15000);
 	const reload = await runTern(["plugin", "reload"], 30000);
 	return { dir, linkCode: link.code, reloadCode: reload.code };
+}
+
+async function pluginList(): Promise<Array<{ id?: string; status?: string }>> {
+	const result = await runTern(["plugin", "list", "--json"], 20000);
+	if (result.code !== 0) throw new Error(result.stderr.trim() || `tern plugin list exited ${result.code}`);
+	try {
+		const parsed = JSON.parse(result.stdout) as { plugins?: Array<{ id?: string; status?: string }> };
+		return parsed.plugins ?? [];
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * One-install promise: pi-tern alone is enough. On first session start inside Tern the
+ * bridge plugin is linked automatically; later starts only refresh its files.
+ */
+export async function ensureBridge(): Promise<{ installed: boolean; dir: string }> {
+	try {
+		const plugins = await pluginList();
+		if (plugins.some((plugin) => plugin.id === "pi-bridge")) {
+			installBridgeFiles();
+			return { installed: false, dir: bridgeDir() };
+		}
+	} catch {
+		/* fall through to install */
+	}
+	const result = await linkBridge();
+	return { installed: true, dir: result.dir };
 }

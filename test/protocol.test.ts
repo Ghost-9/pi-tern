@@ -8,7 +8,7 @@ import path from "node:path";
 import { asHello, encodeHello, extractTspMessages, normalizeOsc877 } from "../lib/tsp.ts";
 import { eventName, parseEventLine } from "../lib/events.ts";
 import { encodeFrame, RelayClient } from "../lib/relay.ts";
-import { buildDashboard } from "../lib/bridge.ts";
+import { buildDashboard, ensureBridge } from "../lib/bridge.ts";
 import { runShellInTern } from "../lib/run.ts";
 import { extractMermaids, messageText, renderMessageMarkdown, summarizeArgs, cleanShellBlock, extractShellBlocks } from "../lib/text.ts";
 import { writeDiagram } from "../lib/diagram.ts";
@@ -126,7 +126,7 @@ test("normalizes ConPTY OSC-877 replies to APC", () => {
 
 test("buildDashboard renders the bridge markdown", () => {
 	const md = buildDashboard({
-		version: "0.3.0",
+		version: "0.4.0",
 		tern: "0.4.5",
 		model: "deepseek-v4.1-flash",
 		context: "42%",
@@ -135,12 +135,47 @@ test("buildDashboard renders the bridge markdown", () => {
 		lastDiagram: "/tmp/d.png",
 		lastShell: "12:00:00",
 		browserTabs: [1, 2],
+		toc: ["[12:00:01] 🤖 Assistant — hello"],
+		recent: ["shell · 12:00:00"],
 		now: new Date("2026-10-06T12:00:00Z"),
 	});
 	assert.match(md, /pi-tern/);
 	assert.match(md, /deepseek-v4\.1-flash/);
 	assert.match(md, /```mermaid/);
 	assert.match(md, /browser tabs \| 1, 2/);
+	assert.match(md, /## Session/);
+	assert.match(md, /\[12:00:01\] 🤖 Assistant/);
+	assert.match(md, /## Recent activity/);
+});
+
+test("ensureBridge links the plugin when missing", async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), "pi-tern-bridge-"));
+	const bin = path.join(dir, "tern");
+	writeFileSync(
+		bin,
+		`#!/bin/sh
+case "$1 $2" in
+  "plugin list") echo '{"plugins":[{"id":"other","status":"ready"}]}' ;;
+  "plugin link") exit 0 ;;
+  "plugin reload") exit 0 ;;
+  *) exit 0 ;;
+esac
+`,
+		{ mode: 0o755 },
+	);
+	const oldPath = process.env.PATH;
+	const oldHome = process.env.HOME;
+	process.env.PATH = `${dir}:${oldPath}`;
+	process.env.HOME = dir;
+	try {
+		const result = await ensureBridge();
+		assert.equal(result.installed, true);
+		assert.ok(result.dir.startsWith(dir), result.dir);
+	} finally {
+		process.env.PATH = oldPath;
+		process.env.HOME = oldHome;
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("runShellInTern drives new/wait/capture through a fake tern", async () => {

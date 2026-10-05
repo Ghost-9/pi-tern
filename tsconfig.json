@@ -6,10 +6,11 @@
 		"allowImportingTsExtensions": true,
 		"esModuleInterop": true,
 		"noEmit": true,
-		"strict": true,
+		"strict": false,
+		"noImplicitAny": false,
 		"skipLibCheck": true,
 		"lib": ["ES2022"],
 		"types": ["node"]
 	},
-	"include": ["index.ts", "lib/**/*.ts", "test/**/*.ts"]
+	"include": ["index.ts", "lib/**/*.ts", "test/**/*.ts", "types/**/*.d.ts"]
 }

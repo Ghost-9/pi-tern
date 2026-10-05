@@ -34,7 +34,7 @@ import { browserOp } from "./lib/browser.ts";
 import { bootstrapControl, capturePane, controlCommand, listPanes, remoteHosts, shotScenarios, waitForText } from "./lib/ctl.ts";
 import { openDiagram, writeDiagram, type DiagramPlacement } from "./lib/diagram.ts";
 import { waitForEvent } from "./lib/events.ts";
-import { bridgeDir, buildDashboard, linkBridge, writeDashboard } from "./lib/bridge.ts";
+import { bridgeDir, buildDashboard, ensureBridge, linkBridge, writeDashboard } from "./lib/bridge.ts";
 import { relayPing } from "./lib/relay.ts";
 import { runShellInTern } from "./lib/run.ts";
 import { loadState, saveState } from "./lib/state.ts";
@@ -42,7 +42,7 @@ import { insideMultiplexer, readTernEnv, runTern, scratchDir, type TernEnv } fro
 import { cleanShellBlock, extractMermaids, extractShellBlocks, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
 import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, normalizeOsc877, type TspHello } from "./lib/tsp.ts";
 
-const PI_TERN_VERSION = "0.3.0";
+const PI_TERN_VERSION = "0.4.0";
 
 interface ProbeState {
 	status: "idle" | "pending" | "confirmed" | "absent" | "timeout" | "skipped";
@@ -62,6 +62,8 @@ let lastMermaid: { source: string; at: number; hash: string } | null = null;
 let lastShell: { source: string; at: number } | null = null;
 let mirrorEnabled = process.env.PI_TERN_MIRROR === "1";
 let mirrorLines: string[] = [];
+let mirrorToc: string[] = [];
+let mirrorStartedAt = new Date();
 let mirrorWritten = 0;
 let mirrorTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -225,9 +227,14 @@ function mirrorFile(): string {
 	return path.join(scratchDir(), "session-mirror.md");
 }
 
-function appendMirror(block: string): void {
+function appendMirror(block: string, tocEntry?: string): void {
 	if (!mirrorEnabled || !block.trim()) return;
 	mirrorLines.push(block.trimEnd() + "\n");
+	if (tocEntry) {
+		mirrorToc.push(tocEntry);
+		if (mirrorToc.length > 60) mirrorToc.splice(0, mirrorToc.length - 60);
+		mirrorWritten = 0;
+	}
 	let total = mirrorLines.reduce((n, line) => n + line.length, 0);
 	let trimmed = false;
 	while (total > 200_000 && mirrorLines.length > 2) {
@@ -245,10 +252,16 @@ function appendMirror(block: string): void {
 	}, 400);
 }
 
+function mirrorHeader(): string {
+	const toc =
+		mirrorToc.length > 0 ? `## Contents\n${mirrorToc.map((entry) => `- ${entry}`).join("\n")}\n\n---\n\n` : "";
+	return `# π session mirror\n\n_${process.cwd()} · ${mirrorStartedAt.toISOString()}_\n\n${toc}`;
+}
+
 function flushMirror(): void {
 	if (!mirrorEnabled) return;
 	try {
-		const text = mirrorLines.join("\n");
+		const text = mirrorHeader() + mirrorLines.join("\n");
 		if (mirrorWritten > 0 && mirrorWritten <= text.length) {
 			appendFileSync(mirrorFile(), text.slice(mirrorWritten), "utf8");
 		} else {
@@ -265,7 +278,9 @@ function startMirror(ctx: any): void {
 	saveState({ mirror: { enabled: true } });
 	if (mirrorLines.length === 0) {
 		mirrorWritten = 0;
-		mirrorLines = ["# π session mirror", "", `_${process.cwd()} · ${new Date().toISOString()}_`, ""];
+		mirrorToc = [];
+		mirrorStartedAt = new Date();
+		mirrorLines = [];
 		try {
 			const entries = ctx?.sessionManager?.getBranch?.() ?? [];
 			if (Array.isArray(entries)) {
@@ -300,11 +315,28 @@ function refreshBridge(ctx: any): void {
 				lastDiagram: loadState().lastDiagram,
 				lastShell: lastShell ? new Date(lastShell.at).toISOString().slice(11, 19) : undefined,
 				browserTabs: [...browserTabs],
+				toc: [...mirrorToc],
+				recent: [
+					...(lastShell ? [`shell · ${new Date(lastShell.at).toISOString().slice(11, 19)}`] : []),
+					...(lastMermaid ? [`diagram · ${new Date(lastMermaid.at).toISOString().slice(11, 19)}`] : []),
+					...(mirrorEnabled ? ["mirror · on"] : []),
+				],
 			}),
 		);
 	} catch {
 		/* best effort */
 	}
+}
+
+/** One-line TOC entry for a rendered message. */
+function tocFromMarkdown(markdown: string, at: Date): string {
+	const heading = markdown.split("\n")[0] ?? "";
+	const role = heading.replace(/^##\s+/, "").replace(/\s+·\s+[\d:]+$/, "") || "Message";
+	const first = markdown
+		.split("\n")
+		.find((line) => line.trim() && !line.startsWith("#") && !line.startsWith("-") && !line.startsWith("_"));
+	const text = (first ?? "").replace(/\s+/g, " ").trim().slice(0, 70);
+	return `[${at.toISOString().slice(11, 19)}] ${role}${text ? ` — ${text}` : ""}`;
 }
 
 function asText(text: string) {
@@ -358,12 +390,24 @@ export default function piTern(pi: ExtensionAPI) {
 			if (!mirrorEnabled) startMirror(ctx);
 			else void openDiagram(mirrorFile(), "split").catch(() => undefined);
 		}
+		// One install: pi-tern links the pi-bridge canvas plugin on first use.
+		if (process.env.PI_TERN_BRIDGE !== "0" && readTernEnv().inTern) {
+			void ensureBridge()
+				.then((result) => {
+					if (result.installed) ctx.ui?.notify?.("pi-bridge installed — press ctrl+shift+f10 in Tern", "info");
+				})
+				.catch(() => undefined);
+		}
 	});
 
 	pi.on("message_end", async (event: any) => {
 		scanMessageForMermaid(event?.message);
 		scanMessageForShell(event?.message);
-		if (mirrorEnabled) appendMirror(renderMessageMarkdown(event?.message, new Date()));
+		if (mirrorEnabled) {
+			const at = new Date();
+			const markdown = renderMessageMarkdown(event?.message, at);
+			if (markdown) appendMirror(markdown, tocFromMarkdown(markdown, at));
+		}
 	});
 
 	pi.on("tool_execution_end", async (event: any) => {
@@ -457,14 +501,27 @@ export default function piTern(pi: ExtensionAPI) {
 		description:
 			"Drive Tern's built-in WKWebView browser (picture-in-picture over the pane). Ops: open {url}, state, snapshot, act {action,ref,text,keys}, eval {script}, capture (returns a PNG pi can see), input, goto, nav, events, close. Returns the JSON answer.",
 		parameters: Type.Object({
-			op: Type.String({ description: "open|state|snapshot|act|eval|capture|input|goto|nav|events|close|tabs" }),
+			op: Type.String({
+				description:
+					"open|state|snapshot|act|eval|capture|input|goto|nav|events|close|tabs|tab_close|pdf|network|form",
+			}),
 			url: Type.Optional(Type.String()),
 			block: Type.Optional(Type.Number({ description: "Browser block id; defaults to the last opened one" })),
 			ref: Type.Optional(Type.String()),
 			action: Type.Optional(Type.String()),
 			text: Type.Optional(Type.String()),
 			keys: Type.Optional(Type.String()),
-			script: Type.Optional(Type.String()),
+			script: Type.Optional(Type.String({ description: "Function source for eval, e.g. \"function(){ return document.title }\"" })),
+			fields: Type.Optional(
+				Type.Array(
+					Type.Object({
+						ref: Type.String({ description: "Snapshot ref of the field" }),
+						value: Type.Optional(Type.String()),
+						action: Type.Optional(Type.String({ description: "fill (default), select, check, uncheck" })),
+					}),
+					{ description: "form: fields to fill in order" },
+				),
+			),
 			baseline: Type.Optional(
 				Type.String({ description: "Save/compare this capture against a named PNG baseline under scratch/baselines" }),
 			),
@@ -480,10 +537,82 @@ export default function piTern(pi: ExtensionAPI) {
 			if (params.action !== undefined) raw.action = params.action;
 			if (params.text !== undefined) raw.text = params.text;
 			if (params.keys !== undefined) raw.keys = params.keys;
-			if (params.script !== undefined) raw.script = params.script;
+			if (params.script !== undefined) raw.function = params.script;
 			const timeout = (params.timeoutSeconds ?? 20) * 1000;
 			if (params.op === "tabs") {
-				return asText(JSON.stringify({ tabs: browserTabs, last: lastBrowserBlock }, null, 2));
+				const states: unknown[] = [];
+				const dead: number[] = [];
+				for (const block of browserTabs) {
+					try {
+						const state = (await browserOp(env, { op: "state", block }, 5000)).ok as
+							| { url?: string; title?: string; loading?: boolean }
+							| undefined;
+						states.push({ block, url: state?.url, title: state?.title, loading: state?.loading });
+					} catch {
+						dead.push(block);
+					}
+				}
+				for (const block of dead) {
+					const index = browserTabs.indexOf(block);
+					if (index >= 0) browserTabs.splice(index, 1);
+				}
+				return asText(JSON.stringify({ tabs: states, last: lastBrowserBlock }, null, 2));
+			}
+			if (params.op === "tab_close") {
+				const block = (raw.block as number | undefined) ?? lastBrowserBlock;
+				if (block === undefined) throw new Error("tab_close needs a block id (or an open tab)");
+				const answer = await browserOp(env, { op: "close", block }, timeout);
+				const index = browserTabs.indexOf(block);
+				if (index >= 0) browserTabs.splice(index, 1);
+				if (lastBrowserBlock === block) lastBrowserBlock = browserTabs[browserTabs.length - 1];
+				return asText(JSON.stringify(answer, null, 2));
+			}
+			if (params.op === "network") {
+				const block = (raw.block as number | undefined) ?? lastBrowserBlock;
+				if (block === undefined) throw new Error("network needs a block id (open a page first)");
+				// Resource Timing via eval: a HAR-lite snapshot without an extra protocol.
+				const fn =
+					"function(){ return { url: location.href, title: document.title, entries: performance.getEntriesByType('resource').map(function(e){ return { name: e.name, initiatorType: e.initiatorType, startTime: Math.round(e.startTime), duration: Math.round(e.duration), transferSize: e.transferSize, encodedBodySize: e.encodedBodySize, decodedBodySize: e.decodedBodySize }; }) }; }";
+				const result = await browserOp(env, { op: "eval", block, function: fn }, timeout);
+				const value = ((result.ok as { value?: { entries?: Array<Record<string, unknown>> } } | undefined)?.value ?? {}) as {
+					entries?: Array<Record<string, unknown>>;
+				};
+				const entries = Array.isArray(value.entries) ? value.entries : [];
+				const file = path.join(scratchDir(), `network-${Date.now()}.json`);
+				try {
+					writeFileSync(file, JSON.stringify({ capturedAt: new Date().toISOString(), ...value }, null, 2));
+				} catch {
+					/* summary still returns */
+				}
+				const total = entries.reduce((sum, entry) => sum + (Number(entry.transferSize) || 0), 0);
+				const slowest = [...entries]
+					.sort((a, b) => (Number(b.duration) || 0) - (Number(a.duration) || 0))
+					.slice(0, 5)
+					.map((entry) => ({ name: entry.name, ms: entry.duration }));
+				return asText(JSON.stringify({ file, count: entries.length, totalTransferBytes: total, slowest }, null, 2));
+			}
+			if (params.op === "form") {
+				const block = (raw.block as number | undefined) ?? lastBrowserBlock;
+				const fields = params.fields ?? [];
+				if (fields.length === 0) throw new Error("form needs fields: [{ref, value, action?}]",);
+				const results: unknown[] = [];
+				for (const field of fields) {
+					try {
+						const answer = await browserOp(
+							env,
+							{ op: "act", block, action: field.action ?? "fill", ref: field.ref, text: field.value ?? "" },
+							timeout,
+						);
+						results.push({ ref: field.ref, ok: true, answer });
+					} catch (error) {
+						results.push({
+							ref: field.ref,
+							ok: false,
+							error: error instanceof Error ? error.message : String(error),
+						});
+					}
+				}
+				return asText(JSON.stringify({ fields: results }, null, 2));
 			}
 			let answer: Awaited<ReturnType<typeof browserOp>>;
 			try {
@@ -549,6 +678,15 @@ export default function piTern(pi: ExtensionAPI) {
 					],
 					details: { block: ok.block ?? params.block ?? lastBrowserBlock, width: ok.width, height: ok.height, file: saved ? file : undefined, baseline: params.baseline },
 				};
+			}
+			if (params.op === "pdf" && ok?.data && ok.mime === "application/pdf") {
+				const file = path.join(scratchDir(), `page-${Date.now()}.pdf`);
+				try {
+					writeFileSync(file, Buffer.from(ok.data, "base64"));
+				} catch {
+					/* still report the operation */
+				}
+				return asText(`Tern browser PDF saved: ${file}`);
 			}
 			return asText(JSON.stringify(answer, null, 2));
 		},
@@ -729,7 +867,6 @@ export default function piTern(pi: ExtensionAPI) {
 		}),
 		async execute(_id, params) {
 			if (process.env.PI_TERN_RUN === "0") throw new Error("tern_run is disabled (PI_TERN_RUN=0)");
-			const env = readTernEnv();
 			let command = params.command ?? "";
 			if (params.fromTranscript) {
 				if (!lastShell) throw new Error("no bash/sh block seen in the conversation yet");

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0 — 2026-10-06
+
+- **One install** — pi-tern links the pi-bridge canvas plugin automatically on the first Tern session (`PI_TERN_BRIDGE=0` disables); installing pi-tern is enough. The dashboard gains a session TOC and recent-activity sections.
+- **Browser suite completed** — network capture (Resource Timing, HAR-lite JSON), PDF export, multi-tab listing/close, a form-field helper, plus the 0.3.0 stale-ref recovery and PNG baselines.
+- **Session mirror** — a TOC header with timestamps; incremental appends kept.
+- **CI** — `tsc --noEmit` (via minimal ambient stubs), `oxlint`, and a coverage job alongside the Node 22/24 matrix; coverage badge in the README (74.9% lines).
+- **Fixed** — the `eval` op now sends the `function` key (Tern rejects `script`); 15 protocol tests.
+
 ## 0.3.0 — 2026-10-06
 
 P0/P1 roadmap release (extension-only).

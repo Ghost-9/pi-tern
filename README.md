@@ -3,6 +3,7 @@
 [![ci](https://github.com/Ghost-9/pi-tern/actions/workflows/ci.yml/badge.svg)](https://github.com/Ghost-9/pi-tern/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/pi-tern.svg)](https://www.npmjs.com/package/pi-tern)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![coverage](https://img.shields.io/badge/coverage-75%25-brightgreen)](https://github.com/Ghost-9/pi-tern/actions/workflows/ci.yml)
 
 Tern integration for the [pi coding agent](https://github.com/earendil-works/pi).
 
@@ -25,13 +26,13 @@ It never writes TSP frames, so pi's renderer is not disturbed. Native Tern surfa
 | TSP handshake | stable | Sends `hello` + DA1 on the pty and reads the reply through pi's raw input. Tern 0.4.5 answers with 44 node kinds and 10 features |
 | Mermaid diagrams | stable | `tern_diagram` / `/tern diagram` opens a file block rendered by Tern's merman engine. `--last` uses the newest fence in the conversation; `pin` keeps one path so re-renders update the same block |
 | Runnable shell blocks | stable | `tern_run` / `/tern run [--last]` runs a bash/sh command from the conversation in a visible Tern pane, waits for exit and returns the captured output (`PI_TERN_RUN=0` disables) |
-| Session mirror | stable | `/tern mirror on` writes this conversation to `session-mirror.md` and opens it as a Tern block; Mermaid inside it renders natively |
+| Session mirror | stable | `/tern mirror on` writes this conversation to `session-mirror.md` and opens it as a Tern block; a session TOC, timestamps and tool lines are included, and Mermaid inside it renders natively |
 | Tern browser | stable | `tern_browser` drives Tern's WKWebView picture-in-picture: `open`, `state`, `snapshot`, `act`, `eval`, `capture` (returns an image), `input`, `goto`, `nav`, `events`, `close` |
 | Pane inspection | stable | `tern_capture` (text, ANSI, HTML, scrollback, surfaces), `tern_panes`, `tern_ctl` |
 | Pane events | stable | `tern_watch` waits for daemon events (`pane_exited`, …) with an optional pane filter, so pi can wait for a test run or server instead of polling |
 | Pane output waits | stable | `tern_watch --expect <regex>` polls a pane until it prints a pattern (dev servers, builds) and returns the tail |
-| Browser suite | stable | stale-ref recovery for `act`, named PNG baselines with change detection, tab listing |
-| pi-bridge canvas | experimental | `/tern bridge install` links a Tern plugin that renders a native Markdown dashboard in a canvas (`ctrl+shift+f10`) |
+| Browser suite | stable | relay/CLI ops, stale-ref recovery, named PNG baselines, network capture (Resource Timing HAR-lite), PDF export, multi-tab listing/close, form-field helper |
+| pi-bridge canvas | experimental | linked automatically on the first Tern session — installing pi-tern is enough; renders a native Markdown dashboard with a session TOC and recent activity (`ctrl+shift+f10`); `PI_TERN_BRIDGE=0` disables |
 | Golden shots | stable | `tern_shot` renders scenario files to PNG + layout JSON (`tern shot`) |
 | Remote hosts | stable | `tern_remote` lists or discovers Tern remote hosts |
 | Diagnostics | stable | `tern_diagnose` and `/tern diagnose`: environment, probe, relay round trip, control endpoint, persisted state |
@@ -114,6 +115,7 @@ Start a session mirror so I can read this conversation natively.
 | `PI_TERN_DIAGRAM_AUTO` | `0` | `1` auto-opens Mermaid blocks found in replies |
 | `PI_TERN_RELAY` | `1` | `0` uses the `tern browser` CLI instead of the daemon relay |
 | `PI_TERN_RUN` | `1` | `0` disables the `tern_run` tool |
+| `PI_TERN_BRIDGE` | `1` | `0` skips the automatic pi-bridge link |
 | `PI_TERN_FORCE` | — | `1` tries Tern features outside a Tern pane |
 
 ## How it works

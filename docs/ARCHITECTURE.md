@@ -63,9 +63,9 @@ sequenceDiagram
   `tern wait --until exit`, then captures the output; an existing pane can be targeted instead.
 - **Pane output waits**: `tern_watch --expect` polls `tern capture` until a regex matches, for
   servers and builds that never "exit".
-- **pi-bridge**: the extension writes `dashboard.md` into a linked plugin directory
-  (`~/Library/Application Support/Tern/plugins/pi-bridge` by link); the plugin adopts its canvas by
-  owner, renders the Markdown (mermaid included) and refreshes every 3 s while open.
+- **pi-bridge**: linked automatically on the first Tern session; the extension writes
+  `dashboard.md` into the linked plugin directory, the plugin adopts its canvas by owner, renders
+  the Markdown (mermaid + session TOC) and refreshes every 3 s while open.
 - **Golden shots**: `tern_shot` runs `tern shot` with a scenario file (`size WxH`, `shot <name>`)
   and reports the PNG/layout files it produced.
 - **ConPTY / multiplexers**: replies may arrive as OSC 877; `normalizeOsc877` converts them before
