@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 — 2026-10-06
+
+- **Runnable shell blocks** — `tern_run` and `/tern run [--last]` execute a bash/sh command from the conversation in a visible Tern pane, wait for exit and return the captured output. `PI_TERN_RUN=0` disables it.
+- Tracks the newest bash/sh fence per message (like `--last` for diagrams) and strips copied `$ ` prompts before running.
+- 11 protocol tests (adds shell-fence extraction and cleaning).
+
 ## 0.2.0 — 2026-10-06
 
 - **Persistent relay** — one reconnecting daemon connection with a request queue and idle close, so many browser ops share one greeting instead of a connect per call.

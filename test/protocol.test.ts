@@ -8,7 +8,7 @@ import path from "node:path";
 import { asHello, encodeHello, extractTspMessages } from "../lib/tsp.ts";
 import { eventName, parseEventLine } from "../lib/events.ts";
 import { encodeFrame, RelayClient } from "../lib/relay.ts";
-import { extractMermaids, messageText, renderMessageMarkdown, summarizeArgs } from "../lib/text.ts";
+import { extractMermaids, messageText, renderMessageMarkdown, summarizeArgs, cleanShellBlock, extractShellBlocks } from "../lib/text.ts";
 import { writeDiagram } from "../lib/diagram.ts";
 
 // The exact Tern 0.4.5 reply captured in a live pane (see CHANGELOG 0.1.0).
@@ -99,6 +99,15 @@ test("pinned diagrams keep one stable path", () => {
 	const second = writeDiagram("flowchart LR; A-->B", "pi-tern test", true);
 	assert.equal(first.path, second.path);
 	rmSync(first.path, { force: true });
+});
+
+test("extracts and cleans shell fences", () => {
+	const text = "Try:\n\n```bash\n$ npm test\n$ npm run build\n```\n\nand\n\n```sh\necho hi\n```\n";
+	const blocks = extractShellBlocks(text);
+	assert.equal(blocks.length, 2);
+	assert.equal(blocks[0], "$ npm test\n$ npm run build");
+	assert.equal(cleanShellBlock(blocks[0]), "npm test\n$ npm run build".replace("$ ", ""));
+	assert.equal(extractShellBlocks("```ts\nconsole.log(1)\n```").length, 0);
 });
 
 test("parses tern event lines", () => {

@@ -24,6 +24,7 @@ It never writes TSP frames, so pi's renderer is not disturbed. Native Tern surfa
 | --- | --- | --- |
 | TSP handshake | stable | Sends `hello` + DA1 on the pty and reads the reply through pi's raw input. Tern 0.4.5 answers with 44 node kinds and 10 features |
 | Mermaid diagrams | stable | `tern_diagram` / `/tern diagram` opens a file block rendered by Tern's merman engine. `--last` uses the newest fence in the conversation; `pin` keeps one path so re-renders update the same block |
+| Runnable shell blocks | stable | `tern_run` / `/tern run [--last]` runs a bash/sh command from the conversation in a visible Tern pane, waits for exit and returns the captured output (`PI_TERN_RUN=0` disables) |
 | Session mirror | stable | `/tern mirror on` writes this conversation to `session-mirror.md` and opens it as a Tern block; Mermaid inside it renders natively |
 | Tern browser | stable | `tern_browser` drives Tern's WKWebView picture-in-picture: `open`, `state`, `snapshot`, `act`, `eval`, `capture` (returns an image), `input`, `goto`, `nav`, `events`, `close` |
 | Pane inspection | stable | `tern_capture` (text, ANSI, HTML, scrollback, surfaces), `tern_panes`, `tern_ctl` |
@@ -74,6 +75,7 @@ Commands:
 ```
 /tern doctor                  probe result, hello kinds, features, credits
 /tern diagnose                environment, relay and control diagnostics
+/tern run [--last] <command>  run a shell command in a visible Tern pane
 /tern restore                 reopen the mirror and the last pinned diagram
 /tern control [window|headless]  start a control endpoint for tern_ctl
 /tern diagram <mermaid>       render a diagram through Tern's merman engine
@@ -85,7 +87,7 @@ Commands:
 /tern title | bell            apply the title, or ring the bell once
 ```
 
-Model-callable tools: `tern_status`, `tern_diagram`, `tern_browser`, `tern_capture`, `tern_panes`, `tern_ctl`, `tern_mirror`, `tern_watch`, `tern_diagnose`.
+Model-callable tools: `tern_status`, `tern_diagram`, `tern_browser`, `tern_capture`, `tern_panes`, `tern_ctl`, `tern_mirror`, `tern_watch`, `tern_diagnose`, `tern_run`.
 
 Examples:
 
@@ -105,6 +107,7 @@ Start a session mirror so I can read this conversation natively.
 | `PI_TERN_MIRROR` | `0` | `1` starts the session mirror automatically |
 | `PI_TERN_DIAGRAM_AUTO` | `0` | `1` auto-opens Mermaid blocks found in replies |
 | `PI_TERN_RELAY` | `1` | `0` uses the `tern browser` CLI instead of the daemon relay |
+| `PI_TERN_RUN` | `1` | `0` disables the `tern_run` tool |
 | `PI_TERN_FORCE` | — | `1` tries Tern features outside a Tern pane |
 
 ## How it works

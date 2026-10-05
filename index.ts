@@ -36,10 +36,10 @@ import { waitForEvent } from "./lib/events.ts";
 import { relayPing } from "./lib/relay.ts";
 import { loadState, saveState } from "./lib/state.ts";
 import { readTernEnv, runTern, scratchDir, type TernEnv } from "./lib/tern.ts";
-import { extractMermaids, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
+import { cleanShellBlock, extractMermaids, extractShellBlocks, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
 import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, type TspHello } from "./lib/tsp.ts";
 
-const PI_TERN_VERSION = "0.2.0";
+const PI_TERN_VERSION = "0.2.1";
 
 interface ProbeState {
 	status: "idle" | "pending" | "confirmed" | "absent" | "timeout";
@@ -55,6 +55,7 @@ let lastBrowserBlock: number | undefined;
 
 // ── Phase A state ────────────────────────────────────────────────────────
 let lastMermaid: { source: string; at: number; hash: string } | null = null;
+let lastShell: { source: string; at: number } | null = null;
 let mirrorEnabled = process.env.PI_TERN_MIRROR === "1";
 let mirrorLines: string[] = [];
 let mirrorTimer: ReturnType<typeof setTimeout> | undefined;
@@ -196,6 +197,18 @@ function scanMessageForMermaid(message: unknown): void {
 	}
 }
 
+/** Remember the newest bash/sh fence so /tern run --last can execute it. */
+function scanMessageForShell(message: unknown): void {
+	const role = (message as { role?: string } | null | undefined)?.role;
+	if (role !== "assistant" && role !== "user") return;
+	const text = messageText(message);
+	if (!text || !/```(?:bash|sh|shell|zsh|console)/i.test(text)) return;
+	const blocks = extractShellBlocks(text);
+	if (blocks.length === 0) return;
+	const source = cleanShellBlock(blocks[blocks.length - 1]);
+	if (source) lastShell = { source, at: Date.now() };
+}
+
 function mirrorFile(): string {
 	return path.join(scratchDir(), "session-mirror.md");
 }
@@ -288,6 +301,44 @@ async function captureWithRetry(
 	throw new Error(`capture failed: ${message}`);
 }
 
+/**
+ * Run a shell command in Tern: a new visible pane (default) or an existing one.
+ * Returns the pane id and the captured output after the command exits (or the
+ * wait window elapses).
+ */
+async function runShellInTern(
+	env: TernEnv,
+	command: string,
+	options: { block?: string; cwd?: string; waitSeconds?: number } = {},
+): Promise<{ block: string; output: string; timedOut: boolean }> {
+	const cleaned = cleanShellBlock(command);
+	if (!cleaned) throw new Error("empty command");
+	if (options.block) {
+		const sent = await runTern(["run", options.block, cleaned], 15000);
+		if (sent.code !== 0) throw new Error(sent.stderr.trim() || `tern run exited ${sent.code}`);
+		return { block: options.block, output: "", timedOut: false };
+	}
+	const args = ["new", "tab", "--json", "--keep-open"];
+	if (options.cwd) args.push("--cwd", options.cwd);
+	args.push("--", "sh", "-lc", cleaned);
+	const created = await runTern(args, 15000);
+	if (created.code !== 0) throw new Error(created.stderr.trim() || `tern new tab exited ${created.code}`);
+	let block = "";
+	try {
+		block = String((JSON.parse(created.stdout) as { block?: number }).block ?? "");
+	} catch {
+		/* fall through to the error below */
+	}
+	if (!block) throw new Error(`could not read the new pane id: ${created.stdout.slice(0, 200)}`);
+	const waitSeconds = Math.max(1, options.waitSeconds ?? 120);
+	const waited = await runTern(
+		["wait", block, "--until", "exit", "--timeout", String(waitSeconds)],
+		(waitSeconds + 10) * 1000,
+	);
+	const output = await capturePane(block, {});
+	return { block, output: output.trimEnd(), timedOut: waited.code !== 0 || waited.timedOut };
+}
+
 export default function piTern(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event: unknown, ctx: any) => {
 		registerProbe(ctx);
@@ -303,6 +354,7 @@ export default function piTern(pi: ExtensionAPI) {
 
 	pi.on("message_end", async (event: any) => {
 		scanMessageForMermaid(event?.message);
+		scanMessageForShell(event?.message);
 		if (mirrorEnabled) appendMirror(renderMessageMarkdown(event?.message));
 	});
 
@@ -599,6 +651,37 @@ export default function piTern(pi: ExtensionAPI) {
 		},
 	});
 
+	const runTool = defineTool({
+		name: "tern_run",
+		label: "Tern run",
+		description:
+			"Run a shell command in a visible Tern pane and return its output. Set fromTranscript to run the newest bash/sh code block from the conversation (like tern_diagram --last). The command runs on this machine with pi's permissions; PI_TERN_RUN=0 disables the tool.",
+		parameters: Type.Object({
+			command: Type.Optional(Type.String({ description: "Shell command to run" })),
+			fromTranscript: Type.Optional(Type.Boolean({ description: "Run the newest bash/sh block seen in the conversation" })),
+			block: Type.Optional(Type.String({ description: "Type into an existing Tern pane instead of opening a new one" })),
+			cwd: Type.Optional(Type.String({ description: "Working directory for a new pane" })),
+			waitSeconds: Type.Optional(Type.Number({ description: "How long to wait for exit (default 120)" })),
+		}),
+		async execute(_id, params) {
+			if (process.env.PI_TERN_RUN === "0") throw new Error("tern_run is disabled (PI_TERN_RUN=0)");
+			const env = readTernEnv();
+			let command = params.command ?? "";
+			if (params.fromTranscript) {
+				if (!lastShell) throw new Error("no bash/sh block seen in the conversation yet");
+				command = lastShell.source;
+			}
+			if (!command.trim()) throw new Error("empty command (pass command or set fromTranscript)");
+			const result = await runShellInTern(env, command, {
+				block: params.block,
+				cwd: params.cwd,
+				waitSeconds: params.waitSeconds,
+			});
+			const output = result.output.length > 20000 ? result.output.slice(-20000) : result.output;
+			return asText(`${result.timedOut ? "still running" : "done"} · pane ${result.block}\n\n${output || "(no output)"}`);
+		},
+	});
+
 	pi.registerTool(statusTool);
 	pi.registerTool(diagramTool);
 	pi.registerTool(browserTool);
@@ -608,12 +691,13 @@ export default function piTern(pi: ExtensionAPI) {
 	pi.registerTool(mirrorTool);
 	pi.registerTool(watchTool);
 	pi.registerTool(diagnoseTool);
+	pi.registerTool(runTool);
 
 	// ── Command ────────────────────────────────────────────────────────────
 
 	pi.registerCommand("tern", {
 		description:
-			"Tern integration: status | diagnose | restore | control [window|headless] | title | bell | diagram [--last] [--pin] <mermaid> | mirror on|off|open|status | browser <json> | capture [block] | panes",
+			"Tern integration: status | diagnose | restore | control [window|headless] | run [--last] <cmd> | title | bell | diagram [--last] [--pin] <mermaid> | mirror on|off|open|status | browser <json> | capture [block] | panes",
 		handler: async (args: string, ctx: any) => {
 			const trimmed = (args ?? "").trim();
 			const [sub = "status"] = trimmed.split(/\s+/);
@@ -677,6 +761,36 @@ export default function piTern(pi: ExtensionAPI) {
 						const endpoint = await bootstrapControl(kind, socketPath);
 						saveState({ control: endpoint });
 						ctx.ui.notify(`control endpoint ready (${kind}): ${endpoint}`, "info");
+						return;
+					}
+					case "run": {
+						if (process.env.PI_TERN_RUN === "0") {
+							ctx.ui.notify("tern run is disabled (PI_TERN_RUN=0)", "warning");
+							return;
+						}
+						const rest = trimmed.slice(trimmed.indexOf(sub) + sub.length).trim();
+						if (!rest) {
+							ctx.ui.notify("usage: /tern run <command>  |  /tern run --last  |  /tern run --block <id> <command>", "warning");
+							return;
+						}
+						let command = rest;
+						let block: string | undefined;
+						if (rest.startsWith("--last")) {
+							if (!lastShell) {
+								ctx.ui.notify("no bash/sh block seen yet in this conversation", "warning");
+								return;
+							}
+							command = lastShell.source;
+						} else if (rest.startsWith("--block ")) {
+							const parts = rest.split(/\s+/);
+							block = parts[1];
+							command = rest.slice(rest.indexOf(block) + block.length).trim();
+						}
+						const result = await runShellInTern(readTernEnv(), command, { block });
+						ctx.ui.notify(
+							`${result.timedOut ? "still running" : "done"} · pane ${result.block}\n${result.output.slice(-1500) || "(no output)"}`,
+							"info",
+						);
 						return;
 					}
 					case "title": {

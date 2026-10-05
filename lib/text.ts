@@ -78,3 +78,27 @@ export function renderToolMarkdown(event: unknown): string {
 	const error = e.error ? ` — ${String((e.error as { message?: string })?.message ?? e.error).slice(0, 200)}` : "";
 	return `- ${state} \`${e.toolName}\`${error}`;
 }
+
+/** Fenced shell blocks in prose (bash, sh, shell, zsh, console). */
+export const SHELL_FENCE_RE = /```(?:bash|sh|shell|zsh|console)\s*\r?\n([\s\S]*?)```/gi;
+
+export function extractShellBlocks(text: string): string[] {
+	if (!text) return [];
+	const out: string[] = [];
+	const re = new RegExp(SHELL_FENCE_RE.source, "gi");
+	let match: RegExpExecArray | null;
+	while ((match = re.exec(text)) !== null) {
+		const body = match[1].trim();
+		if (body) out.push(body);
+	}
+	return out;
+}
+
+/** Drop `$ ` prompts from copied shell examples so the command can run as-is. */
+export function cleanShellBlock(source: string): string {
+	return source
+		.split("\n")
+		.map((line) => line.replace(/^\s*\$\s?/, ""))
+		.join("\n")
+		.trim();
+}

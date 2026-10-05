@@ -58,6 +58,9 @@ sequenceDiagram
 - **Session mirror**: opt-in; renders finalized messages and tool events into
   `~/.pi/agent/scratch/pi-tern/session-mirror.md` (capped at ~200 KB) and opens it once as a file
   block. `/tern mirror open` re-focuses it.
+- **Shell blocks**: `message_end` records the newest bash/sh fence (stripping `$ ` prompts).
+  `tern_run` opens a keep-open pane (`tern new tab -- sh -lc …`), waits with
+  `tern wait --until exit`, then captures the output; an existing pane can be targeted instead.
 
 ## Events, control and restore
 
