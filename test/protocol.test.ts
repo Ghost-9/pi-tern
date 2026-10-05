@@ -9,6 +9,8 @@ import { asHello, encodeHello, extractTspMessages, normalizeOsc877 } from "../li
 import { eventName, parseEventLine } from "../lib/events.ts";
 import { encodeFrame, RelayClient } from "../lib/relay.ts";
 import { buildDashboard, ensureBridge } from "../lib/bridge.ts";
+import { dbQueryGuard } from "../lib/guard.ts";
+import { mermaidFromOutput } from "../lib/diagrams.ts";
 import { runShellInTern } from "../lib/run.ts";
 import { mailbox, mailboxBatch, EXPECTED_PLUGIN_VERSION } from "../lib/mailbox.ts";
 import { extractMermaids, messageText, renderMessageMarkdown, summarizeArgs, cleanShellBlock, extractShellBlocks } from "../lib/text.ts";
@@ -293,6 +295,22 @@ test("mailboxBatch round-trips several ops in one request", async () => {
 		process.env.HOME = oldHome;
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("dbQueryGuard blocks credential stores and untouched queries pass", () => {
+	assert.equal(dbQueryGuard({ path: "/tmp/app.db", sql: "select * from users", action: "query" }).allowed, true);
+	assert.equal(dbQueryGuard({ path: "/tmp/app.db", sql: "select * from auth_credentials", action: "query" }).allowed, false);
+	assert.equal(dbQueryGuard({ path: "/Users/x/.omp/agent/agent.db", sql: "select 1", action: "query" }).allowed, false);
+	assert.equal(dbQueryGuard({ path: "/Users/x/.omp/agent/agent.db", sql: "select 1", action: "tables" }).allowed, true);
+	assert.equal(
+		dbQueryGuard({ path: "/Users/x/.omp/agent/agent.db", sql: "select * from auth_credentials", action: "query", allowSecret: true }).allowed,
+		true,
+	);
+});
+
+test("mermaidFromOutput prefers a fence over raw output", () => {
+	assert.equal(mermaidFromOutput("noise\n```mermaid\nflowchart LR\n  A-->B\n```\n"), "flowchart LR\n  A-->B");
+	assert.equal(mermaidFromOutput("graph TD\n A-->B"), "graph TD\n A-->B");
 });
 
 test("parses tern event lines", () => {

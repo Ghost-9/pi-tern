@@ -37,6 +37,9 @@ It never writes TSP frames, so pi's renderer is not disturbed. Native Tern surfa
 | Browser suite | stable | relay/CLI ops, stale-ref recovery, named PNG baselines, network capture (Resource Timing HAR-lite), PDF export, multi-tab listing/close, form-field helper |
 | pi-bridge canvas | experimental | linked automatically on the first Tern session — installing pi-tern is enough; renders a native Markdown dashboard with a session TOC and recent activity (`ctrl+shift+f10`); `PI_TERN_BRIDGE=0` disables |
 | Golden shots | stable | `tern_shot` renders scenario files to PNG + layout JSON (`tern shot`) |
+| UI test harness | stable | `tern_ui_test` / `/tern ui-test <scenario> [expect]` runs a scenario and asserts against a control endpoint |
+| Diagram pipelines | stable | `--from "<cmd>"` renders mermaid from a command's output; `git` renders the repo as a gitGraph |
+| Credential guard | stable | `tern_db` refuses credential-looking tables and agent/models stores unless `allowSecret:true` |
 | Remote hosts | stable | `tern_remote` lists or discovers Tern remote hosts |
 | Diagnostics | stable | `tern_diagnose` and `/tern diagnose`: environment, probe, relay round trip, control endpoint, persisted state |
 | Control endpoint | stable | `/tern control [window|headless]` starts a Tern window or headless session with a control socket; `tern_ctl` uses it automatically |
@@ -91,7 +94,12 @@ Commands:
 /tern ask|remember|recall <text>   talk to Carly (remote providers; no vault content)
 /tern schedule <when> | <title> · tasks · cancel <id>
 /tern settings get|list|describe <key>
-/tern notebook read <pane>
+/tern notebook read <pane>   read an open notebook block
+/tern notebook run <path>    execute a notebook via nbconvert in a visible pane
+/tern ui-test <scenario> [expect]  shot + control-endpoint assertions
+/tern diagram git [dir]      render the repository history as a gitGraph
+/tern diagram --from "<cmd>" render mermaid printed by a command
+/tern mirror search <text>   search the session mirror
 /tern restore                 reopen the mirror and the last pinned diagram
 /tern control [window|headless]  start a control endpoint for tern_ctl
 /tern bridge install|refresh|status  install the pi-bridge Tern canvas
@@ -104,7 +112,7 @@ Commands:
 /tern title | bell            apply the title, or ring the bell once
 ```
 
-Model-callable tools: `tern_status`, `tern_diagram`, `tern_browser`, `tern_capture`, `tern_panes`, `tern_ctl`, `tern_mirror`, `tern_watch`, `tern_diagnose`, `tern_run`, `tern_shot`, `tern_remote`, `tern_bridge`, `tern_db`, `tern_doc`, `tern_board`, `tern_carly`, `tern_notebook`, `tern_settings`.
+Model-callable tools: `tern_status`, `tern_run`, `tern_browser` are declared; `tern_diagram`, `tern_capture`, `tern_panes`, `tern_ctl`, `tern_mirror`, `tern_watch`, `tern_diagnose`, `tern_shot`, `tern_remote`, `tern_bridge`, `tern_db`, `tern_doc`, `tern_board`, `tern_carly`, `tern_notebook`, `tern_settings`, `tern_ui_test` are deferred and callable from codemode scripts by name (listed in `tern_status`).
 
 Examples:
 
@@ -130,11 +138,11 @@ Start a session mirror so I can read this conversation natively.
 
 ## Prompt footprint
 
-Only five tools are declared to the model — `tern_status`, `tern_run`, `tern_browser`, `tern_db`,
-`tern_diagram`. The other fourteen are `deferred`: they do not appear in the prompt and are callable
-from codemode scripts by name (the names are listed in `tern_status`). Measured cost of the whole
-extension: **+1,309 prompt tokens** (21,704 → 23,013), down from **+3,679** when every tool was
-declared. See [docs/BENCHMARKING.md](docs/BENCHMARKING.md).
+Only three tools are declared to the model — `tern_status`, `tern_run`, `tern_browser`. The other
+sixteen are `deferred`: they do not appear in the prompt and are callable from codemode scripts by
+name (the names are listed in `tern_status`). Measured cost of the whole extension: **+774 prompt
+tokens** (21,704 → 22,478), down from +1,309 in 0.8.0 and +3,679 in 0.7.0. See
+[docs/BENCHMARKING.md](docs/BENCHMARKING.md).
 
 ## How it works
 

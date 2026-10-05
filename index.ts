@@ -35,6 +35,9 @@ import { bootstrapControl, capturePane, controlCommand, listPanes, remoteHosts, 
 import { openDiagram, writeDiagram, type DiagramPlacement } from "./lib/diagram.ts";
 import { waitForEvent } from "./lib/events.ts";
 import { bridgeDir, buildDashboard, ensureBridge, linkBridge, writeDashboard } from "./lib/bridge.ts";
+import { gitGraphFromLog, mermaidFromOutput, runCommand } from "./lib/diagrams.ts";
+import { dbQueryGuard } from "./lib/guard.ts";
+import { uiTest } from "./lib/uitest.ts";
 import { mailbox } from "./lib/mailbox.ts";
 import { relayPing } from "./lib/relay.ts";
 import { runShellInTern } from "./lib/run.ts";
@@ -43,7 +46,7 @@ import { insideMultiplexer, readTernEnv, runTern, scratchDir, type TernEnv } fro
 import { cleanShellBlock, extractMermaids, extractShellBlocks, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
 import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, normalizeOsc877, type TspHello } from "./lib/tsp.ts";
 
-const PI_TERN_VERSION = "0.8.0";
+const PI_TERN_VERSION = "0.9.0";
 
 interface ProbeState {
 	status: "idle" | "pending" | "confirmed" | "absent" | "timeout" | "skipped";
@@ -470,6 +473,9 @@ export default function piTern(pi: ExtensionAPI) {
 			title: Type.Optional(Type.String({ description: "Optional heading above the diagram" })),
 			fromFile: Type.Optional(Type.Boolean({ description: "Treat source as a path to a .mmd/.md file" })),
 			fromTranscript: Type.Optional(Type.Boolean({ description: "Use the last mermaid block seen in the conversation" })),
+			fromCommand: Type.Optional(Type.String({ description: "Run a shell command and render the first mermaid fence it prints" })),
+			git: Type.Optional(Type.Boolean({ description: "Render this git repository's history as a mermaid gitGraph" })),
+			cwd: Type.Optional(Type.String({ description: "Working directory for fromCommand/git" })),
 			pin: Type.Optional(Type.Boolean({ description: "Keep one stable file path so re-renders update the same block" })),
 			placement: Type.Optional(
 				Type.Union([Type.Literal("split"), Type.Literal("tab"), Type.Literal("preview")], {
@@ -487,8 +493,13 @@ export default function piTern(pi: ExtensionAPI) {
 				if (!lastMermaid) throw new Error("no mermaid block in the conversation yet");
 				source = lastMermaid.source;
 			}
+			if (params.git) source = await gitGraphFromLog(params.cwd);
+			if (params.fromCommand) {
+				const result = await runCommand(params.fromCommand, params.cwd);
+				source = mermaidFromOutput(result.output);
+			}
 			if (params.fromFile) source = readFileSync(source, "utf8");
-			if (!source.trim()) throw new Error("empty mermaid source (pass source or set fromTranscript)");
+			if (!source.trim()) throw new Error("empty mermaid source (pass source, fromTranscript, fromCommand or git)");
 			const written = writeDiagram(source, params.title, params.pin === true);
 			if (params.placement) await openDiagram(written.path, params.placement as DiagramPlacement);
 			else await openDiagram(written.path, "split");
@@ -746,12 +757,34 @@ export default function piTern(pi: ExtensionAPI) {
 		name: "tern_mirror",
 		label: "Tern session mirror",
 		description:
-			"Mirror the conversation to a Markdown file block in Tern (mermaid fences render natively). Actions: on, off, open (focus/reload the block), refresh (flush now), status.",
+			"Mirror the conversation to a Markdown file block in Tern (mermaid fences render natively). Actions: on, off, open (focus/reload the block), refresh (flush now), search {query}, status.",
 		parameters: Type.Object({
-			action: Type.Union([Type.Literal("on"), Type.Literal("off"), Type.Literal("open"), Type.Literal("refresh"), Type.Literal("status")]),
+			action: Type.Union([
+				Type.Literal("on"),
+				Type.Literal("off"),
+				Type.Literal("open"),
+				Type.Literal("refresh"),
+				Type.Literal("search"),
+				Type.Literal("status"),
+			]),
+			query: Type.Optional(Type.String({ description: "search: literal text to find in the mirror" })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx: any) {
 			switch (params.action) {
+				case "search": {
+					const query = (params.query ?? "").trim();
+					if (!query) throw new Error("mirror search needs a query");
+					let text = "";
+					try {
+						text = readFileSync(mirrorFile(), "utf8");
+					} catch {
+						return asText(`mirror file not found: ${mirrorFile()}`);
+					}
+					const matches = text
+						.split("\n")
+						.filter((line) => line.toLowerCase().includes(query.toLowerCase()));
+					return asText(matches.slice(-60).join("\n").slice(0, 8000) || `no matches for ${query}`);
+				}
 				case "on":
 					startMirror(ctx);
 					return asText(`session mirror on: ${mirrorFile()}`);
@@ -956,9 +989,19 @@ export default function piTern(pi: ExtensionAPI) {
 			sql: Type.Optional(Type.String()),
 			limit: Type.Optional(Type.Number()),
 			allowWrite: Type.Optional(Type.Boolean({ description: "exec only: open read-write" })),
+			allowSecret: Type.Optional(
+				Type.Boolean({ description: "Allow queries against credential-looking tables or the agent/models stores" }),
+			),
 			timeoutSeconds: Type.Optional(Type.Number()),
 		}),
 		async execute(_id, params) {
+			const guard = dbQueryGuard({
+				path: params.path,
+				sql: params.sql,
+				action: params.action,
+				allowSecret: params.allowSecret === true,
+			});
+			if (!guard.allowed) throw new Error(`tern_db refused: ${guard.reason}`);
 			const result = await mailbox(
 				`db.${params.action}`,
 				{
@@ -1140,9 +1183,50 @@ export default function piTern(pi: ExtensionAPI) {
 		},
 	});
 
+	const uiTestTool = defineTool({
+		name: "tern_ui_test",
+		label: "Tern UI test",
+		description:
+			"Render a Tern scenario offscreen with `tern shot`, then optionally assert against a control endpoint (tree/a11y/state/css/webcall/dump/stats). Returns pass/fail with evidence.",
+		parameters: Type.Object({
+			scenario: Type.String({ description: "Scenario file path (see examples/scenario.sample.txt)" }),
+			outDir: Type.Optional(Type.String()),
+			control: Type.Optional(Type.String({ description: "Control endpoint; default is the stored one" })),
+			assertions: Type.Optional(
+				Type.Array(
+					Type.Object({
+						type: Type.Union([
+							Type.Literal("tree"),
+							Type.Literal("a11y"),
+							Type.Literal("state"),
+							Type.Literal("css"),
+							Type.Literal("webcall"),
+							Type.Literal("dump"),
+							Type.Literal("stats"),
+						]),
+						selector: Type.Optional(Type.String()),
+						expect: Type.Optional(Type.String({ description: "Substring the output must contain" })),
+					}),
+				),
+			),
+			timeoutSeconds: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params) {
+			const control = params.control ?? loadState().control ?? readTernEnv().windowSocket;
+			const result = await uiTest({
+				scenario: params.scenario,
+				outDir: params.outDir,
+				control,
+				assertions: params.assertions,
+				timeoutMs: (params.timeoutSeconds ?? 180) * 1000,
+			});
+			return asText(JSON.stringify(result, null, 2));
+		},
+	});
+
 	// Prompt-footprint optimization: only the high-frequency core is declared to the
 	// model; everything else is reachable from codemode scripts under one namespace.
-	const directTools = new Set(["tern_status", "tern_run", "tern_browser", "tern_db", "tern_diagram"]);
+	const directTools = new Set(["tern_status", "tern_run", "tern_browser"]);
 	const ternNamespace = { name: "tern", description: "Tern terminal integration (sessions, browser, data, mirrors)." };
 	for (const tool of [
 		statusTool,
@@ -1164,6 +1248,7 @@ export default function piTern(pi: ExtensionAPI) {
 		carlyTool,
 		notebookTool,
 		settingsTool,
+		uiTestTool,
 	]) {
 		const name = (tool as { name?: string }).name ?? "";
 		pi.registerTool(directTools.has(name) ? tool : ({ ...tool, exposure: "deferred", namespace: ternNamespace } as unknown as typeof tool));
@@ -1289,6 +1374,19 @@ export default function piTern(pi: ExtensionAPI) {
 							ctx.ui.notify("not inside Tern (TERM_PROGRAM=tern)", "warning");
 							return;
 						}
+						if (rest.startsWith("--from ")) {
+							const command = rest.slice(7).trim();
+							const result = await runCommand(command);
+							const opened = await openMermaid(mermaidFromOutput(result.output), "command diagram");
+							ctx.ui.notify(`mermaid (from command) opened in Tern: ${opened.path}`, "info");
+							return;
+						}
+						if (rest === "git" || rest.startsWith("git ")) {
+							const cwd = rest.slice(4).trim() || undefined;
+							const opened = await openMermaid(await gitGraphFromLog(cwd), "git graph");
+							ctx.ui.notify(`gitGraph opened in Tern: ${opened.path}`, "info");
+							return;
+						}
 						if (rest.startsWith("--last")) {
 							if (!lastMermaid) {
 								ctx.ui.notify("no mermaid block seen yet in this conversation", "warning");
@@ -1339,6 +1437,23 @@ export default function piTern(pi: ExtensionAPI) {
 						} else if (action === "open") {
 							await openDiagram(mirrorFile(), "split");
 							ctx.ui.notify(`session mirror opened: ${mirrorFile()}`, "info");
+						} else if (action === "search") {
+							const query = trimmed.split(/\s+/).slice(2).join(" ").trim();
+							if (!query) {
+								ctx.ui.notify("usage: /tern mirror search <text>", "warning");
+								return;
+							}
+							let text = "";
+							try {
+								text = readFileSync(mirrorFile(), "utf8");
+							} catch {
+								ctx.ui.notify(`mirror file not found: ${mirrorFile()}`, "warning");
+								return;
+							}
+							const matches = text
+								.split("\n")
+								.filter((line) => line.toLowerCase().includes(query.toLowerCase()));
+							ctx.ui.notify(matches.slice(-40).join("\n").slice(0, 2000) || `no matches for ${query}`, "info");
 						} else if (action === "refresh") {
 							flushMirror();
 							ctx.ui.notify(`session mirror refreshed: ${mirrorFile()}`, "info");
@@ -1466,10 +1581,50 @@ export default function piTern(pi: ExtensionAPI) {
 						ctx.ui.notify(JSON.stringify(result).slice(0, 2000), result.ok ? "info" : "error");
 						return;
 					}
+					case "ui-test": {
+						const parts = trimmed.split(/\s+/);
+						const scenario = parts[1];
+						if (!scenario) {
+							ctx.ui.notify("usage: /tern ui-test <scenario.txt> [expect substring]", "warning");
+							return;
+						}
+						const expect = parts.slice(2).join(" ").trim() || undefined;
+						const control = loadState().control ?? readTernEnv().windowSocket;
+						const result = await uiTest({
+							scenario,
+							control,
+							assertions: expect ? [{ type: "state", expect }] : undefined,
+						});
+						ctx.ui.notify(
+							JSON.stringify({ passed: result.passed, files: result.files.length, assertions: result.assertions }, null, 2).slice(0, 2000),
+							result.passed ? "info" : "warning",
+						);
+						return;
+					}
 					case "notebook": {
-						const pane = Number(trimmed.split(/\s+/)[2]);
+						const parts = trimmed.split(/\s+/);
+						const action = parts[1] ?? "read";
+						if (action === "run") {
+							const notebook = parts[2];
+							if (!notebook) {
+								ctx.ui.notify("usage: /tern notebook run <path.ipynb>", "warning");
+								return;
+							}
+							const command =
+								process.env.PI_TERN_NOTEBOOK_CMD?.replaceAll("{file}", notebook) ??
+								`jupyter nbconvert --to notebook --execute --inplace "${notebook}"`;
+							const result = await runShellInTern(command, { waitSeconds: 300 });
+							ctx.ui.notify(
+								result.timedOut
+									? `notebook still running in pane ${result.block}`
+									: `notebook executed (pane ${result.block})\n${result.output.slice(-800) || "(no output)"}`,
+								result.timedOut ? "warning" : "info",
+							);
+							return;
+						}
+						const pane = Number(parts[2]);
 						if (!Number.isFinite(pane)) {
-							ctx.ui.notify("usage: /tern notebook read <pane>", "warning");
+							ctx.ui.notify("usage: /tern notebook read <pane>  |  /tern notebook run <path.ipynb>", "warning");
 							return;
 						}
 						const result = await mailbox("notebook.read", { pane }, 15000);

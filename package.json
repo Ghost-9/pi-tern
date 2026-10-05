@@ -1,6 +1,6 @@
 {
 	"name": "pi-tern",
-	"version": "0.8.0",
+	"version": "0.9.0",
 	"description": "Tern integration for the pi coding agent: TSP handshake, native Mermaid diagrams, WKWebView browser automation, pane capture and a session mirror.",
 	"license": "MIT",
 	"author": "Mayank Batra",
@@ -33,7 +33,8 @@
 		"README.md",
 		"LICENSE",
 		"CHANGELOG.md",
-		"scripts"
+		"scripts",
+		"spikes"
 	],
 	"pi": {
 		"extensions": [

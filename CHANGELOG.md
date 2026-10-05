@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.0 — 2026-10-06
+
+- **Adaptive mailbox** — 100 ms poll for 5 s after activity, 250 ms idle. Measured ping median **66 ms** (was 252), min 62, max 314.
+- **Prompt −79 % overall** — three direct tools (`tern_status`, `tern_run`, `tern_browser`); delta **+774 tokens** (0.8.0: +1,309; 0.7.0: +3,679).
+- **UI-test harness** — `tern_ui_test` / `/tern ui-test <scenario> [expect]` runs `tern shot` and asserts against a control endpoint (tree/a11y/state/css/webcall/dump/stats); verified passing.
+- **Diagram pipelines** — `--from "<cmd>"` renders a mermaid fence from a command's output; `git` renders the repository as a mermaid gitGraph.
+- **Mirror search** — `tern_mirror search` / `/tern mirror search <text>`.
+- **Credential guard** — `tern_db` refuses credential-looking tables and the agent/models stores unless `allowSecret:true` (`lib/guard.ts`, unit-tested).
+- **Notebook run** — `/tern notebook run <path>` executes through `nbconvert` in a visible pane, with a clear missing-tool path (jupyter is not installed on this machine).
+- **Docs** — `docs/CORE-BACKPORT.md` (verified loader-hook route, no binary edits), `RELEASING.md`, `spikes/omp-session-surface.py`.
+- 20 protocol tests.
+
 ## 0.8.0 — 2026-10-06
 
 - **Prompt footprint −64 %** — only five tools are declared to the model (`tern_status`, `tern_run`, `tern_browser`, `tern_db`, `tern_diagram`); the other fourteen are `deferred` and callable from codemode scripts by name (listed in `tern_status`). Measured: **+1,309** prompt tokens (21,704 → 23,013) vs **+3,679** in 0.7.0. A real codemode call to a deferred tool was verified.

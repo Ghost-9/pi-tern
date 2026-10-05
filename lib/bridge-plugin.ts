@@ -3,7 +3,7 @@
 export const BRIDGE_PLUGIN_TOML = `schema = 1
 id = "pi-bridge"
 name = "pi-bridge"
-version = "0.8.0"
+version = "0.9.0"
 description = "Shows the pi-tern dashboard, answers batched data requests (SQLite, documents, boards, settings) and exposes pi status to Carly."
 window = "window.luau"
 `;
@@ -20,7 +20,8 @@ local ABOUT = table.concat({
 }, "")
 local REFRESH_MS = 3000
 local MAILBOX_MS = 250
-local PLUGIN_VERSION = "0.8.0"
+local MAILBOX_FAST_MS = 100
+local PLUGIN_VERSION = "0.9.0"
 local state = {
 	pane = nil,
 	armed = false,
@@ -28,6 +29,7 @@ local state = {
 	busy = false,
 	exported = false,
 	dbs = {},
+	fast_until = 0,
 	claim = tostring(math.random(1, 1000000000)),
 }
 
@@ -390,6 +392,7 @@ local function mailbox_tick(cx)
 		local req = read_request()
 		if req and claimed() then
 			state.busy = true
+			state.fast_until = tern.now() + 5000
 			local ran, err = pcall(handle, cx, req, function() state.busy = false end)
 			if not ran then
 				respond(tostring(req.id), false, nil, err)
@@ -399,7 +402,8 @@ local function mailbox_tick(cx)
 			end
 		end
 	end
-	tern.timer(MAILBOX_MS, mailbox_tick)
+	local interval = tern.now() < state.fast_until and MAILBOX_FAST_MS or MAILBOX_MS
+	tern.timer(interval, mailbox_tick)
 end
 
 register()

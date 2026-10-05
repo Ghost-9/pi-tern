@@ -102,8 +102,14 @@ claim file keeps two windows from running the same request, and a stale request 
 discarded. The plugin caches up to 8 SQLite handles and polls every 250 ms (the extension polls
 every 60 ms): measured median 252 ms per op, three batched ops in 251 ms.
 
-Prompt footprint: five direct tools and fourteen `deferred` tools (callable from codemode by name) —
-measured +1,309 tokens versus no extension, down from +3,679 when all tools were declared.
+Prompt footprint: three direct tools and sixteen `deferred` tools (callable from codemode by name) —
+measured +774 tokens versus no extension (0.7.0: +3,679; 0.8.0: +1,309).
+
+UI testing: `tern_ui_test` runs `tern shot` on a scenario file, then evaluates assertions against a
+control endpoint (`tree`, `a11y`, `state`, `css`, `webcall`, `dump`, `stats`) and reports pass/fail
+with the raw output. Diagram pipelines: `tern_diagram --from "<cmd>"` renders the first mermaid
+fence a command prints, and `git` renders `git log` as a gitGraph. The `tern_db` credential guard
+(`lib/guard.ts`) refuses credential-looking tables by default.
 
 ## What the extension deliberately does not do
 

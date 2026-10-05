@@ -7,7 +7,7 @@ import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:f
 import path from "node:path";
 import { bridgeDir } from "./bridge.ts";
 
-export const EXPECTED_PLUGIN_VERSION = "0.8.0";
+export const EXPECTED_PLUGIN_VERSION = "0.9.0";
 
 export interface MailboxResult {
 	ok: boolean;
