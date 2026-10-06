@@ -6,6 +6,15 @@
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { bridgeDir } from "./bridge.ts";
+import { readTernEnv } from "./tern.ts";
+
+/** Fail fast outside Tern instead of waiting for a mailbox timeout. */
+function assertTernReady(): void {
+	if (process.env.PI_TERN_FORCE === "1") return;
+	if (!readTernEnv().inTern) {
+		throw new Error("tern tools need a Tern pane (TERM_PROGRAM=tern); set PI_TERN_FORCE=1 to override");
+	}
+}
 
 export const EXPECTED_PLUGIN_VERSION = "0.9.0";
 
@@ -79,6 +88,7 @@ export async function mailbox(
 	args: Record<string, unknown> = {},
 	timeoutMs = 10000,
 ): Promise<MailboxResult> {
+	assertTernReady();
 	const dir = bridgeDir();
 	mkdirSync(dir, { recursive: true });
 	const responseFile = path.join(dir, "response.json");
@@ -107,6 +117,7 @@ export async function mailboxBatch(
 	ops: Array<{ op: string; args?: Record<string, unknown> }>,
 	timeoutMs = 30000,
 ): Promise<BatchResult> {
+	assertTernReady();
 	const dir = bridgeDir();
 	mkdirSync(dir, { recursive: true });
 	const responseFile = path.join(dir, "response.json");

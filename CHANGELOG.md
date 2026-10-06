@@ -6,7 +6,9 @@
   `ProcessTerminal.write`, ANSI grid to TSP `rows` frames, stock-pi fallback, 100 ms frame
   coalescing. Verified inside Tern: 619 frames, `[Skills] …` content, **0 ANSI writes**; fallback
   outside Tern returns stock 1.0.4. Semantic dock/composer/transcript nodes remain M2/M3.
-- Docs: `native/README.md`, `docs/NATIVE-M1.md` (metrics + charts); native unit tests (5).
+- **Dock split (M2-lite)**: each frame splits at pi's composer rule — transcript rows to `main`, composer/status pinned in `dock` (verified: `add dock` ×1, `set main`/`set dock` ×2).
+- **Compatibility matrix**: `native/compat.mjs` runs version/print/json/rpc + both launcher fallbacks; **7/7**, with no TSP traffic outside Tern.
+- Docs: `native/README.md`, `docs/NATIVE-M1.md` (metrics + charts); native unit tests (7).
 
 ## 0.9.1 — 2026-10-06
 

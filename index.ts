@@ -304,6 +304,7 @@ function startMirror(ctx: any): void {
 
 /** Write the Markdown dashboard the pi-bridge Tern canvas renders. */
 function refreshBridge(ctx: any): void {
+	if (!readTernEnv().inTern && process.env.PI_TERN_FORCE !== "1") return;
 	try {
 		const env = readTernEnv();
 		const model = String((ctx?.model as any)?.id ?? (ctx?.model as any)?.name ?? "pi").split("/").pop() ?? "pi";
@@ -540,6 +541,9 @@ export default function piTern(pi: ExtensionAPI) {
 			timeoutSeconds: Type.Optional(Type.Number()),
 		}),
 		async execute(_id, params) {
+			if (!readTernEnv().inTern && process.env.PI_TERN_FORCE !== "1") {
+				throw new Error("tern_browser needs a Tern pane (TERM_PROGRAM=tern)");
+			}
 			const env = readTernEnv();
 			const raw: Record<string, unknown> = { op: params.op };
 			if (params.url !== undefined) raw.url = params.url;
@@ -901,6 +905,9 @@ export default function piTern(pi: ExtensionAPI) {
 		}),
 		async execute(_id, params) {
 			if (process.env.PI_TERN_RUN === "0") throw new Error("tern_run is disabled (PI_TERN_RUN=0)");
+			if (!readTernEnv().inTern && process.env.PI_TERN_FORCE !== "1") {
+				throw new Error("tern_run needs a Tern pane (TERM_PROGRAM=tern)");
+			}
 			let command = params.command ?? "";
 			if (params.fromTranscript) {
 				if (!lastShell) throw new Error("no bash/sh block seen in the conversation yet");
@@ -927,6 +934,9 @@ export default function piTern(pi: ExtensionAPI) {
 			outDir: Type.Optional(Type.String({ description: "Output directory (default under scratch/shots)" })),
 		}),
 		async execute(_id, params) {
+			if (!readTernEnv().inTern && process.env.PI_TERN_FORCE !== "1") {
+				throw new Error("tern_shot needs a Tern pane (TERM_PROGRAM=tern)");
+			}
 			const outDir = params.outDir ?? path.join(scratchDir(), "shots", String(Date.now()));
 			const result = await shotScenarios(params.scenarios ?? [], outDir, 180000);
 			return asText(
@@ -947,6 +957,9 @@ export default function piTern(pi: ExtensionAPI) {
 			action: Type.Union([Type.Literal("hosts"), Type.Literal("discover")], { description: "Default hosts" }),
 		}),
 		async execute(_id, params) {
+			if (!readTernEnv().inTern && process.env.PI_TERN_FORCE !== "1") {
+				throw new Error("tern_remote needs a Tern pane (TERM_PROGRAM=tern)");
+			}
 			return asText(await remoteHosts(params.action));
 		},
 	});

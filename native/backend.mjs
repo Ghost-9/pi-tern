@@ -4,6 +4,7 @@
  */
 import { appendFileSync } from "node:fs";
 import { Screen } from "./ansi.mjs";
+import { splitDock } from "./layout.mjs";
 import { encodeMessage } from "./tsp.mjs";
 
 export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.session" } = {}) {
@@ -56,16 +57,22 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 		flush() {
 			if (!dirty && seq > 0) return;
 			dirty = false;
-			const lines = screen.lines();
-			const fingerprint = lines.join("\n");
+			const all = screen.lines();
+			const { main, dock } = splitDock(all);
+			const fingerprint = `${main.join("\n")}\u0000${dock.join("\n")}`;
 			if (fingerprint === lastLines) return;
 			lastLines = fingerprint;
 			open();
 			seq += 1;
+			const mainNode = { id: "m", k: "rows", p: { cols, lines: main } };
+			const dockNode = dock.length > 0 ? { id: "d", k: "rows", p: { cols, lines: dock } } : null;
 			const ops =
 				seq === 1
-					? [["add", "main", surface, null, { id: "r", k: "rows", p: { cols, lines } }]]
-					: [["set", "r", { cols, lines }]];
+					? [
+						["add", "main", surface, null, mainNode],
+						...(dockNode ? [["add", "dock", surface, null, dockNode]] : []),
+					]
+					: [["set", "m", { cols, lines: main }], ...(dockNode ? [["set", "d", { cols, lines: dock }]] : [])];
 			send("f", { sf: surface, s: seq, ops });
 		},
 		close() {

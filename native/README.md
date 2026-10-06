@@ -16,8 +16,13 @@ Inside Tern the launcher:
 1. probes with the TSP `hello` + DA1 sentinel (raw stdin, 700 ms; skipped in tmux/zellij);
 2. on a reply, spawns `node --import native/register-hook.mjs <release>/dist/cli.js`;
 3. the hook appends a patch to pi-tui's `terminal.js`; `ProcessTerminal.write` is replaced by the
-   sink (`PI_TERN_NATIVE=1`);
-4. on no reply, a missing release entry or any failure it execs the **stock** `pi` launcher.
+   sink (`PI_TERN_NATIVE=1`), which splits the frame at pi's composer rule: transcript rows to
+   `main`, composer/status rows pinned in `dock`;
+4. on no reply, a missing release entry, or any non-interactive mode (`-p`, `--mode json|rpc`,
+   `--version`, `--help`, `--export`) it execs the **stock** `pi` launcher.
+
+Compatibility check: `node native/compat.mjs` (7/7: version, print, json, rpc, launcher fallbacks,
+and no TSP traffic outside Tern).
 
 ## Verified (2026-10-06, managed pi 1.0.4, Tern 0.4.5)
 
@@ -29,6 +34,8 @@ Inside Tern the launcher:
 | Fallback outside Tern | `node native/pi-tern.mjs --version` → `1.0.4` (stock) |
 | Unit tests | 5/5 (`test/native.test.ts`) |
 | Frame coalescing | throttle added: max one `f` per 100 ms, unchanged frames skipped |
+| Dock split | `main` = transcript area, `dock` = composer/status; `add dock` ×1, `set main/set dock` ×2 |
+| Compatibility | **7/7** non-Tern modes clean (`native/compat.mjs`) |
 
 Limits: rows only — no semantic dock/composer/transcript nodes (M2), RSS unmeasured, no acks
 (`listen:false`), and history is the visible grid, not the terminal scrollback.

@@ -22,12 +22,31 @@ function resolveRelease() {
 }
 
 function runStock(args) {
+	// Recursion guard: if something aliased `pi` to this launcher, run the managed bundle directly.
+	if (process.env.PI_TERN_LAUNCHED === "1") {
+		const release = resolveRelease();
+		if (release && existsSync(path.join(path.dirname(release.entry), "bundle", "cli.js"))) {
+			const child = spawn(process.execPath, [path.join(path.dirname(release.entry), "bundle", "cli.js"), ...args], { stdio: "inherit" });
+			child.on("exit", (code, signal) => (signal ? process.kill(process.pid, signal) : process.exit(code ?? 0)));
+			return;
+		}
+	}
 	const stock = process.env.PI_TERN_STOCK || "pi";
-	const child = spawn(stock, args, { stdio: "inherit" });
+	const child = spawn(stock, args, { stdio: "inherit", env: { ...process.env, PI_TERN_LAUNCHED: "1" } });
 	child.on("exit", (code, signal) => {
 		if (signal) process.kill(process.pid, signal);
 		else process.exit(code ?? 0);
 	});
+}
+
+/** Native mode is only meaningful for the interactive TUI; never touch other modes' stdio. */
+function nativeEligible(args) {
+	if (process.env.PI_TERN_LAUNCHED === "1") return false;
+	if (args.some((arg) => ["-p", "--print", "-h", "--help", "--version", "-V", "--export"].includes(arg))) return false;
+	const modeIndex = args.indexOf("--mode");
+	const mode = modeIndex >= 0 ? args[modeIndex + 1] : args.find((arg) => arg.startsWith("--mode="))?.slice("--mode=".length);
+	if (mode && mode !== "text") return false;
+	return true;
 }
 
 function inTern() {
@@ -78,7 +97,7 @@ const hook = path.join(path.dirname(new URL(import.meta.url).pathname), "registe
 if (!release || !existsSync(release.entry) || !existsSync(hook)) {
 	runStock(process.argv.slice(2));
 } else {
-	const hello = await probe();
+	const hello = nativeEligible(process.argv.slice(2)) ? await probe() : null;
 	if (!hello) {
 		runStock(process.argv.slice(2));
 	} else {

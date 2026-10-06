@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Screen } from "../native/ansi.mjs";
+import { splitDock } from "../native/layout.mjs";
 import { encodeHello, encodeMessage, extractMessages, isHelloReply } from "../native/tsp.mjs";
 
 test("screen places text and honours cursor moves", () => {
@@ -33,6 +34,20 @@ test("screen keeps SGR runs and resets", () => {
 	assert.match(line, /red/);
 	assert.match(line, /end/);
 	assert.match(line, /\x1b\[31m/);
+});
+
+test("splitDock pins the composer area below the last rule", () => {
+	const lines = ["transcript 1", "transcript 2", "──────────────────────────", " > type here", " model · ctx"];
+	const { main, dock } = splitDock(lines);
+	assert.equal(main.length, 2);
+	assert.equal(dock.length, 3);
+	assert.match(dock[0], /─+/);
+});
+
+test("splitDock falls back to full main when no rule exists", () => {
+	const { main, dock } = splitDock(["a", "b", "c"]);
+	assert.equal(main.length, 3);
+	assert.equal(dock.length, 0);
 });
 
 test("tsp hello encodes and parses", () => {
