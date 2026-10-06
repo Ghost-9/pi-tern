@@ -19,7 +19,7 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
       - name: Protocol tests
-        run: node --test test/protocol.test.ts
+        run: node --experimental-strip-types --test test/protocol.test.ts test/native.test.ts test/features.test.ts test/refs.test.ts
       - name: Publish to npm
         # npm trusted publishing (OIDC) must be configured for this repo/workflow.
         # An NPM_TOKEN secret also works (it then takes precedence over OIDC).
