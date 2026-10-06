@@ -164,6 +164,75 @@ what is merely accepted: [`docs/RENDER-PROOF.md`](docs/RENDER-PROOF.md).
 Gate: **119/119 unit - 9/9 gate steps - 7/7 compat - 19/19 live - strict typecheck clean.**
 
 
+## 1.1.8 - 2026-10-06 (tool results)
+
+**A `git diff` used to reach the reader as `+` and `-` characters, while Tern ships real widgets for
+exactly that. It does not any more.**
+
+### `pi-tern-tools` — a second plugin, deliberately
+
+Tern gives every plugin window entry a **50 ms load budget**, and `pi-bridge` was already at it: its
+window entry is the data plane's mailbox, one branch per operation. Measured on Tern 0.5.1, adding
+the tool-results rendering to that file took it from ~3-in-5 loads to ~1-in-4.
+
+Worse, an over-budget load fails as a **runtime** error —
+
+```
+error=runtime error: tern: load exceeded 50 ms
+```
+
+— which reads exactly like a syntax error to anything grepping `failed to load`. That is the fourth
+time that particular confusion has cost this project a cycle, and it cost one here while building
+this. So the rendering moved to its own plugin with its own budget. `pi-bridge` is back to 644 lines
+and loads reliably; the new file is 186.
+
+The widgets come from Tern's own generated types (`tern plugin types` → `tern.d.luau`), so the
+signatures are authoritative rather than remembered:
+
+```
+diff:         (text: string, path: string?) -> Node
+code:         (text: string, lang: string?, start: number?) -> Node
+test_summary: (passed: number, failed: number, skipped: number, took: string?) -> Node
+```
+
+Open it with **ctrl+shift+f11**. Each widget call is its own `pcall`, so a malformed entry costs that
+card rather than the panel.
+
+### `lib/toolresults.ts` — classifying, and knowing when not to
+
+`diff` when there is a real hunk header; `code` when a file's contents come back with a language Tern
+can highlight; `test_summary` only when a runner printed **countable** numbers **and** something
+failed; otherwise muted text, and `null` for output worth nothing. A confident-looking 0/0/0 meter in
+front of the reader would be worse than the text it replaced, and an error message is never source
+however `.ts` the file it failed to read was named.
+
+Twenty tests. `pi-tern-tools` is installed and linked automatically with `pi-bridge`, and reads only —
+it never writes the mailbox files `pi-bridge` owns.
+
+### Two bugs, both caught immediately by the new checks
+
+- A **forward `goto`** cannot jump into the scope of a local, and that block declares four. It is a
+  compile error visible only on a window start — exactly the trap `plugin reload` cannot see.
+  Restructured as a nested `if`.
+- Three **bare backticks in a Luau comment** terminated the TypeScript template literal. Caught by
+  `scripts/check-luau-source.mjs`, which is why that script exists; the check now scans **every**
+  `*_LUAU` template in `lib/`, found by naming convention, so a new plugin cannot skip it.
+
+### And the gate stopped being flaky
+
+`pi-bridge` failing ~1 run in 5 made the whole gate unreliable, which is worse than no gate. The
+check now separates the two failure kinds, because they need opposite handling:
+
+- **`syntax error`** — deterministic. The code is wrong; another attempt fails identically. Fails
+  immediately.
+- **`load exceeded 50 ms`** — transient. The machine was busy. Retried up to three times.
+
+Verified both: an injected syntax error fails on attempt 1 and says so; the gate then passed **4/4**
+consecutive runs, against 2/3 before.
+
+Gate: **130/130 unit - 9/9 gate steps - 7/7 compat - 19/19 live - strict typecheck clean.**
+
+
 ## 1.1.7 — 2026-10-06
 
 **The block notice is said once, and it now comes with the command that fixes it.**

@@ -42,6 +42,7 @@ import { buildManifest, gatherEnvironment, renderManifest } from "./lib/manifest
 import { ghStatus, openPrInBrowser, prComments, prList, prSummary, prVerdict, prWatch } from "./lib/pr.ts";
 import { defaultWorktreePath, openWorktreePane, repoRoot, worktreeAdd, worktreeList, worktreePrune, worktreeRemove, worktreeStatus } from "./lib/worktree.ts";
 import { bridgeDir, buildDashboard, ensureBridge, linkBridge, writeDashboard, writeDashboardJson } from "./lib/bridge.ts";
+import { classifyToolResult, mergeToolResults, type ToolResult } from "./lib/toolresults.ts";
 import { gitGraphFromLog, mermaidFromOutput, runCommand } from "./lib/diagrams.ts";
 import { dbQueryGuard } from "./lib/guard.ts";
 import { uiTest } from "./lib/uitest.ts";
@@ -359,8 +360,43 @@ function startMirror(ctx: ExtensionContext): void {
 /** Last payload written, so an unchanged turn does not rewrite two files for nothing. */
 let lastDashboardFingerprint = "";
 
+/** Recent tool results, newest first, for the panel's native widgets. */
+let toolResults: ToolResult[] = [];
+let toolResultSeq = 0;
+/** The last context seen, so a tool result can refresh the panel from inside an event handler. */
+let lastContext: ExtensionContext | undefined;
+
+/**
+ * Pull displayable text out of a tool result, whichever shape pi used.
+ *
+ * pi has changed this shape across releases (a string, a content array with a text part, an object
+ * with `output`), so reading one field silently yields "" on the others — and an empty string is
+ * exactly what the classifier treats as "nothing worth showing". Hence all three, in order.
+ */
+function toolOutputText(event: any): string {
+	const raw = event?.result ?? event?.output ?? event?.content;
+	if (typeof raw === "string") return raw;
+	if (Array.isArray(raw)) {
+		return raw
+			.map((part) => {
+				if (typeof part === "string") return part;
+				if (part && typeof part === "object" && typeof part.text === "string") return part.text;
+				return "";
+			})
+			.join("\n");
+	}
+	if (raw && typeof raw === "object") {
+		for (const key of ["output", "text", "stdout", "content"]) {
+			const value = (raw as Record<string, unknown>)[key];
+			if (typeof value === "string") return value;
+		}
+	}
+	return "";
+}
+
 function refreshBridge(ctx: ExtensionContext): void {
 	if (!readTernEnv().inTern && process.env.PI_TERN_FORCE !== "1") return;
+	lastContext = ctx;
 	try {
 		const env = readTernEnv();
 		const model = String((ctx?.model as any)?.id ?? (ctx?.model as any)?.name ?? "pi").split("/").pop() ?? "pi";
@@ -389,6 +425,7 @@ function refreshBridge(ctx: ExtensionContext): void {
 				exists: ref.exists,
 			})),
 			chart: lastChart,
+			toolResults,
 		};
 		const fingerprint = JSON.stringify(data);
 		if (fingerprint === lastDashboardFingerprint) return;
@@ -809,6 +846,19 @@ export default function piTern(pi: ExtensionAPI) {
 
 	pi.on("tool_execution_end", async (event: any) => {
 		if (mirrorEnabled) appendMirror(renderToolMarkdown(event, new Date()));
+		// Classify for the panel: a git diff should be a diff widget, not `+`/`-` characters.
+		const classified = classifyToolResult({
+			tool: String(event?.tool ?? event?.toolName ?? "tool"),
+			output: toolOutputText(event),
+			toolInput: event?.input ?? event?.args,
+			at: new Date(),
+			seq: toolResultSeq++,
+		});
+		if (classified) {
+			toolResults = mergeToolResults(toolResults, classified);
+			// Only if a context has been seen; before session_start there is nothing to refresh.
+			if (lastContext) refreshBridge(lastContext);
+		}
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {

@@ -2,9 +2,10 @@
  * pi-bridge: the extension writes a Markdown dashboard; the Tern plugin renders it in a canvas.
  */
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { BRIDGE_PLUGIN_TOML, BRIDGE_WINDOW_LUAU } from "./bridge-plugin.ts";
+import { TOOLS_PLUGIN_TOML, TOOLS_WINDOW_LUAU } from "./tools-plugin.ts";
 import { runTern, scratchDir } from "./tern.ts";
 import { PLUGIN_VERSION } from "./version.ts";
 
@@ -25,6 +26,37 @@ export interface DashboardData {
 	files?: Array<{ path: string; cwd?: string; line?: number; exists?: boolean }>;
 	/** A native bar chart (tern.ui.bars takes {label, value} pairs). */
 	chart?: { title?: string; series: Array<{ label: string; value: number }> };
+	/**
+	 * Tool results from this session, so the panel can render them as native widgets.
+	 *
+	 * These were previously invisible in Tern: a `git diff` reached the reader as `+`/`-` text in a
+	 * code box because the transcript was a `rows` mirror, while Tern has real widgets for all of
+	 * it — `tern.ui.diff`, `tern.ui.code` and `tern.ui.test_summary` — sitting unused. The shape
+	 * mirrors each widget's own signature so the plugin does no parsing: it passes what it is given.
+	 */
+	toolResults?: ToolResult[];
+}
+
+/** One tool result, already classified by the extension. */
+export interface ToolResult {
+	/** Stable id, so a re-render replaces the card instead of appending another. */
+	id: string;
+	tool: string;
+	/** `diff` | `code` | `tests` | `text` — decides which native widget renders it. */
+	kind: "diff" | "code" | "tests" | "text";
+	at: string;
+	/** A unified diff for `kind: "diff"`. */
+	diff?: string;
+	/** The file the diff belongs to; Tern picks the grammar from the extension. */
+	path?: string;
+	/** Source for `kind: "code"`. */
+	code?: string;
+	/** Language for `kind: "code"` — the grammar Tern highlights with. */
+	lang?: string;
+	/** Counts for `kind: "tests"`. */
+	tests?: { passed: number; failed: number; skipped: number; took?: string };
+	/** Fallback text when the tool produced something none of the widgets model. */
+	text?: string;
 }
 
 export function bridgeDir(): string {
@@ -86,6 +118,16 @@ export function writeDashboardJson(data: DashboardData): string {
 	const dir = bridgeDir();
 	mkdirSync(dir, { recursive: true });
 	const file = path.join(dir, "dashboard.json");
+	// The tool-results panel is a separate plugin, and tern.fs is rooted at a plugin's own
+	// directory, so it keeps its own copy. Best effort: a missing panel must not break the writer.
+	const toolsDir = path.join(scratchDir(), "pi-tern-tools");
+	if (existsSync(toolsDir)) {
+		try {
+			mkdirSync(toolsDir, { recursive: true });
+		} catch {
+			/* handled by the write below */
+		}
+	}
 	const payload = {
 		title: `π ${data.version}`,
 		model: data.model,
@@ -98,10 +140,17 @@ export function writeDashboardJson(data: DashboardData): string {
 		browserTabs: data.browserTabs,
 		files: (data.files ?? []).slice(0, 40),
 		chart: data.chart,
+		// The tool-results panel plugin reads this; without it the panel always says "none yet".
+		toolResults: data.toolResults ?? [],
 		markdown: buildPanelMarkdown(data),
 		updatedAt: (data.now ?? new Date()).toISOString(),
 	};
 	writeFileSync(file, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+	try {
+		writeFileSync(path.join(toolsDir, "dashboard.json"), `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+	} catch {
+		/* the panel plugin is optional */
+	}
 	return file;
 }
 
@@ -150,10 +199,45 @@ export function bridgeBuildId(): string {
 	return `${PLUGIN_VERSION}-${hash.slice(0, 16)}`;
 }
 
+/**
+ * Install and link the tool-results panel plugin.
+ *
+ * It lives in the same directory as pi-bridge on purpose: it only *reads* `dashboard.json`, and
+ * sharing the directory is what lets it work without a second mailbox protocol. It never writes the
+ * request/response files, so the two cannot collide.
+ */
+export async function installToolsPlugin(): Promise<{ dir: string; linked: boolean }> {
+	const dir = bridgeDir();
+	writeFileSync(path.join(dir, "pi-tern-tools.toml"), TOOLS_PLUGIN_TOML, "utf8");
+	// A plugin directory holds one manifest, so the second plugin needs its own directory alongside.
+	const toolsDir = path.join(scratchDir(), "pi-tern-tools");
+	mkdirSync(toolsDir, { recursive: true });
+	// The panel reads dashboard.json from its own directory, so point it at pi-bridge's by copying
+	// the writer's target rather than reaching across: tern.fs is rooted at the plugin directory.
+	writeFileSync(path.join(toolsDir, "plugin.toml"), TOOLS_PLUGIN_TOML, "utf8");
+	writeFileSync(path.join(toolsDir, "window.luau"), TOOLS_WINDOW_LUAU, "utf8");
+	writeFileSync(path.join(toolsDir, "dashboard.json"), readDashboardOrEmpty(), "utf8");
+	writeFileSync(path.join(toolsDir, "pi-tern-build.json"), `${bridgeBuildId()}\n`, "utf8");
+
+	const link = await runTern(["plugin", "link", toolsDir], 15000);
+	const reload = await runTern(["plugin", "reload"], 30000);
+	return { dir: toolsDir, linked: link.code === 0 && reload.code === 0 };
+}
+
+function readDashboardOrEmpty(): string {
+	try {
+		return readFileSync(path.join(bridgeDir(), "dashboard.json"), "utf8");
+	} catch {
+		return JSON.stringify({ toolResults: [] });
+	}
+}
+
 export async function linkBridge(): Promise<{ dir: string; linkCode: number; reloadCode: number }> {
 	const dir = installBridgeFiles();
 	const link = await runTern(["plugin", "link", dir], 15000);
 	const reload = await runTern(["plugin", "reload"], 30000);
+	// Best effort: a failure here costs the tool panel, not the data plane.
+	await installToolsPlugin().catch(() => undefined);
 	return { dir, linkCode: link.code, reloadCode: reload.code };
 }
 

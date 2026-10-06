@@ -5,6 +5,8 @@
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,7 +14,8 @@ import { test } from "node:test";
 import { detectRasterizer, niceMax, renderChartSvg } from "../lib/figure.ts";
 import { buildManifest, renderManifest, type Manifest } from "../lib/manifest.ts";
 import { prVerdict, safeSelector, type PrSummary } from "../lib/pr.ts";
-import { bridgeBuildId } from "../lib/bridge.ts";
+import { bridgeBuildId, writeDashboardJson } from "../lib/bridge.ts";
+import { classifyToolResult, languageFor, mergeToolResults, pathFromToolInput } from "../lib/toolresults.ts";
 import { defaultWorktreePath } from "../lib/worktree.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -263,4 +266,134 @@ test("the bridge build id changes when the shipped Luau changes, not only when t
 		createHash("sha256").update("two").digest("hex").slice(0, 16),
 		"the hash component is content-derived",
 	);
+});
+
+test("a git diff is classified as a diff widget, not as text", () => {
+	const unified = [
+		"diff --git a/index.ts b/index.ts",
+		"index 1234567..89abcde 100644",
+		"--- a/index.ts",
+		"+++ b/index.ts",
+		"@@ -10,7 +10,7 @@ export function go() {",
+		"-\tconst x = 1;",
+		"+\tconst x = 2;",
+		" }",
+	].join("\n");
+	const result = classifyToolResult({ tool: "bash", output: unified, toolInput: {}, seq: 1 });
+	assert.equal(result?.kind, "diff");
+	assert.equal(result?.diff, unified);
+	assert.equal(result?.tool, "bash");
+});
+
+test("a test run with failures becomes a test summary", () => {
+	const output = [
+		"  3 passed",
+		"  2 failed",
+		"  1 skipped",
+		"in 1.42s",
+	].join("\n");
+	const result = classifyToolResult({ tool: "bash", output, seq: 2 });
+	assert.equal(result?.kind, "tests");
+	assert.deepEqual(result?.tests, { passed: 3, failed: 2, skipped: 1, took: "1.42s" });
+});
+
+test("a test run with nothing failing stays plain text", () => {
+	// Forcing a 0/0/0 meter in front of the reader would be worse than the text it replaced.
+	const result = classifyToolResult({ tool: "bash", output: "42 passing\nin 0.9s", seq: 3 });
+	assert.equal(result?.kind, "text");
+	assert.equal(result?.tests, undefined);
+});
+
+test("a source file becomes a code widget with a language Tern can highlight", () => {
+	const source = 'export const answer = 42;\nexport function go() {\n\treturn answer;\n}\n';
+	const result = classifyToolResult({
+		tool: "read",
+		output: source,
+		toolInput: { path: "/tmp/project/index.ts" },
+		seq: 4,
+	});
+	assert.equal(result?.kind, "code");
+	assert.equal(result?.lang, "typescript");
+	assert.equal(result?.path, "/tmp/project/index.ts");
+});
+
+test("an error message is never treated as source, however the file is named", () => {
+	const result = classifyToolResult({
+		tool: "read",
+		output: "Error: ENOENT: no such file or directory, open '/tmp/nope.ts'\n  at openSync (node:fs)",
+		toolInput: { path: "/tmp/nope.ts" },
+		seq: 5,
+	});
+	assert.equal(result?.kind, "text", "a diff/code widget given an error renders worse than the text");
+});
+
+test("prose in a .ts file is not mistaken for source", () => {
+	const prose = "x".repeat(500) + "\n\n" + "y".repeat(500);
+	const result = classifyToolResult({ tool: "read", output: prose, toolInput: { path: "notes.ts" }, seq: 6 });
+	assert.equal(result?.kind, "text");
+});
+
+test("empty output produces nothing at all", () => {
+	assert.equal(classifyToolResult({ tool: "read", output: "   ", seq: 7 }), null);
+	assert.equal(classifyToolResult({ tool: "read", output: "", seq: 8 }), null);
+});
+
+test("the newest results win and the list stays bounded", () => {
+	let results: ReturnType<typeof mergeToolResults> = [];
+	for (let i = 0; i < 20; i += 1) {
+		results = mergeToolResults(
+			results,
+			classifyToolResult({ tool: "bash", output: `note ${i}`, toolInput: {}, seq: i }),
+		);
+	}
+	assert.ok(results.length <= 12, `expected a bounded list, got ${results.length}`);
+	assert.equal(results[0]?.text, "note 19", "newest first");
+	// Re-reporting the same id replaces rather than duplicates, so a re-render does not stack cards.
+	const before = results.length;
+	results = mergeToolResults(results, { id: "bash-19", tool: "bash", kind: "text", at: "", text: "note 19" });
+	assert.equal(results.length, before, "the same id replaces instead of appending");
+});
+
+test("the language table covers the common cases and nothing exotic", () => {
+	assert.equal(languageFor("a/b.rs"), "rust");
+	assert.equal(languageFor("x.MJS"), "javascript");
+	assert.equal(languageFor("noext"), undefined);
+	assert.equal(languageFor(undefined), undefined);
+});
+
+test("the path is taken from whichever argument name the tool used", () => {
+	assert.equal(pathFromToolInput({ file_path: "/a/b.py" }), "/a/b.py");
+	assert.equal(pathFromToolInput({ target: "/a/b.go" }), "/a/b.go");
+	assert.equal(pathFromToolInput({ nothing: 1 }), undefined);
+	assert.equal(pathFromToolInput("string"), undefined);
+});
+
+test("the dashboard payload carries tool results to the panel plugin", () => {
+	// Omitting this from the payload is silent: the panel then always reports "none yet" while
+	// looking perfectly healthy, which is the failure mode this whole path is meant to remove.
+	const dir = mkdtempSync(path.join(os.tmpdir(), "pi-tern-dash-"));
+	const previousHome = process.env.HOME;
+	process.env.HOME = dir;
+	try {
+		const results = mergeToolResults(
+			[],
+			classifyToolResult({ tool: "bash", output: "  3 passed\n  1 failed\nin 1s", toolInput: {}, seq: 1 }),
+		);
+		const file = writeDashboardJson({
+			version: "1.1.8",
+			model: "m",
+			cwd: "/tmp",
+			mirror: "off",
+			browserTabs: [],
+			toolResults: results,
+		});
+		const payload = JSON.parse(readFileSync(file, "utf8")) as { toolResults?: unknown[] };
+		assert.ok(Array.isArray(payload.toolResults), "toolResults must reach the file the plugin reads");
+		assert.equal(payload.toolResults.length, 1);
+		assert.equal((payload.toolResults[0] as { kind: string }).kind, "tests");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
+	}
 });

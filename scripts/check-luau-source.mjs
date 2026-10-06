@@ -16,59 +16,60 @@
  * `plugin list` still says `ready`. That one is linted in test/bridge-luau.test.ts, which can run
  * because it does not corrupt the module.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const file = path.join(root, "lib", "bridge-plugin.ts");
-const source = readFileSync(file, "utf8");
+const libDir = path.join(root, "lib");
 const problems = [];
 
-const match = /export const BRIDGE_WINDOW_LUAU = `([\s\S]*?)\n`;\n/.exec(source);
-if (!match) {
-	console.error(`could not find the BRIDGE_WINDOW_LUAU template literal in ${file}`);
+/**
+ * Every exported template literal in lib/ that holds Luau, found by naming convention rather than a
+ * hand-written list — so a new plugin cannot be added without being checked.
+ */
+const luauSources = [];
+for (const entry of readdirSync(libDir)) {
+	if (!entry.endsWith(".ts")) continue;
+	const file = path.join(libDir, entry);
+	const source = readFileSync(file, "utf8");
+	for (const match of source.matchAll(/export const (\w*_LUAU) = `([\s\S]*?)\n`;\n/g)) {
+		luauSources.push({ name: match[1], file: path.relative(root, file), lua: match[2] });
+	}
+}
+
+if (luauSources.length === 0) {
+	console.error("no Luau templates found in lib/*.ts — the scan itself is wrong");
 	process.exit(1);
 }
-const lua = match[1];
 
-// A bare backtick ends the literal. An escaped one (\`) reaches the Lua as a literal backtick
-// inside a comment, which is why the existing comments use them and why they are allowed.
-const bareBackticks = lua
-	.split("\n")
-	.map((line, index) => ({ index: index + 1, line }))
-	.filter(({ line }) => /(?<!\\)`/.test(line))
-	.map(({ index, line }) => `  ${path.relative(root, file)}:${index}: ${line.trim().slice(0, 90)}`);
-if (bareBackticks.length > 0) {
-	problems.push(
-		"a bare backtick in the Luau source terminates the TypeScript template literal:\n" +
-			bareBackticks.join("\n") +
-			"\n  Escape it as \\` if the comment genuinely needs one.",
-	);
-}
+for (const { name, file, lua } of luauSources) {
+	const lines = lua.split("\n");
+	const at = (index) => `  ${file}:${index + 1}: ${lines[index].trim().slice(0, 90)}`;
 
-// A `${` in the Luau would be interpolated by TypeScript, silently substituting JS into Lua.
-const interpolations = lua
-	.split("\n")
-	.map((line, index) => ({ index: index + 1, line }))
-	.filter(({ line }) => /\$\{/.test(line) && !line.includes('"${PLUGIN_VERSION}"') && !line.includes('"${PI_TERN'))
-	.map(({ index, line }) => `  ${path.relative(root, file)}:${index}: ${line.trim().slice(0, 90)}`);
-if (interpolations.length > 0) {
-	problems.push(
-		"a ${...} in the Luau source is interpolated by TypeScript rather than reaching the plugin:\n" +
-			interpolations.join("\n"),
-	);
-}
+	// A bare backtick ends the literal. An escaped one (\`) reaches the Luau as a literal backtick
+	// inside a comment, which is why the existing comments use them and why they are allowed.
+	const bare = lines.map((line, i) => (/([^\\]|^)`/.test(line) ? i : -1)).filter((i) => i >= 0);
+	if (bare.length > 0) {
+		problems.push(
+			`${name}: a bare backtick terminates the TypeScript template literal:\n${bare.map(at).join("\n")}` +
+				"\n  Escape it as \\` if the comment genuinely needs one.",
+		);
+	}
 
-// The window entry must not grow a bare tab or CR inside a string; Tern's log is the only place
-// either would show up, and only on the next window start.
-const controlChars = lua
-	.split("\n")
-	.map((line, index) => ({ index: index + 1, line }))
-	.filter(({ line }) => line.includes("\r"))
-	.map(({ index, line }) => `  ${path.relative(root, file)}:${index}: carriage return`);
-if (controlChars.length > 0) {
-	problems.push("control characters inside the Luau source:\n" + controlChars.join("\n"));
+	// A `${` in the Luau would be interpolated by TypeScript, silently substituting JS into Lua.
+	// The plugin's own version interpolation is the one legitimate case.
+	const interpolated = lines
+		.map((line, i) => (line.includes("${") && !line.includes('"${PLUGIN_VERSION}"') ? i : -1))
+		.filter((i) => i >= 0);
+	if (interpolated.length > 0) {
+		problems.push(`${name}: a \${...} is interpolated by TypeScript rather than reaching the plugin:\n${interpolated.map(at).join("\n")}`);
+	}
+
+	const carriage = lines.map((line, i) => (line.includes("\r") ? i : -1)).filter((i) => i >= 0);
+	if (carriage.length > 0) {
+		problems.push(`${name}: carriage returns inside the Luau source:\n${carriage.map(at).join("\n")}`);
+	}
 }
 
 if (problems.length > 0) {
@@ -77,4 +78,8 @@ if (problems.length > 0) {
 	process.exit(1);
 }
 
-console.log(`ok   generated Luau source is intact (${lua.split("\n").length} lines)`);
+console.log(
+	`ok   generated Luau source is intact (${luauSources.length} template(s): ${luauSources
+		.map((s) => `${s.name} ${s.lua.split("\n").length}L`)
+		.join(", ")})`,
+);

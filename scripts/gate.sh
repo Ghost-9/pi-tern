@@ -131,7 +131,7 @@ if [ "${PI_TERN_SKIP_LIVE:-0}" = "1" ]; then
 	skip "live surface (no Tern pane)" "PI_TERN_SKIP_LIVE=1"
 elif command -v tern >/dev/null 2>&1; then
 	# A window start is what compiles the plugin's Luau; `plugin reload` cannot see a syntax error.
-	step "tern plugin loads" "$LOG/plugin.log" bash scripts/plugin-check.sh pi-bridge
+	step "tern plugin loads" "$LOG/plugin.log" bash scripts/plugin-check.sh pi-bridge pi-tern-tools
 	step "live surface (no Tern pane)" "$LOG/live.log" node --experimental-strip-types scripts/verify.ts
 else
 	skip "tern plugin loads" "\`tern\` is not on PATH"
