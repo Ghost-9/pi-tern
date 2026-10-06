@@ -1,6 +1,68 @@
 # Changelog
 
-## 1.1.0 — 2026-10-06
+## 1.1.1 — 2026-10-06
+
+**Verified TSP encodings, clickable file links, a preview sheet, and the TSP encodings verified
+against Tern rather than guessed.** Everything here works with no Tern pane — only a running
+Tern daemon.
+
+### The TSP encodings are now evidence, not inference
+
+Tern answers rejected frames with `{"ev":"error","op":<index>,"msg":…}`, so the protocol can
+be tested. `scripts/tsp-probe.mjs` sends one candidate per frame:
+
+| Frame | Verdict |
+| --- | --- |
+| `{k:"md", p:{text}}`, `{k:"image"}`, `{k:"chart"}`, `{k:"card"}`, the `aside` region, `["set"]` | **accepted, zero errors** |
+| `["blob", id, mime, data]` and `["blob", mime, data]` | **`unknown op blob`** |
+
+The blob store is a plugin/canvas API, not a frame op — so **1.1.0's earlier guess was wrong and
+is fixed**: image bytes go inline in the node (`{k:"image", p:{data, mime}}`). Full table, the
+advertised `kinds` and `features`, and the reason `tern capture` — not stdin — is where the errors
+appear: **`docs/TSP-ENCODINGS.md`**.
+
+### Clickable file references
+
+`file://` links always open in Tern as a file block (its own documented behaviour). A `rows` node
+is inert text, so anything the reader should be able to open has to arrive as **`md`**. Therefore:
+
+- **`lib/refs.ts`** finds the files an agent mentions — markdown links, `` `backticks` ``, bare
+  paths, `file://` URLs, `path:line:col` — resolves them against the cwd, checks existence,
+  classifies them, and emits `file://` URLs. A bare single-segment name is trusted only when the
+  file really exists, or `node.js` in prose becomes a file reference.
+- **`tern_files`** — `list` · `preview` · `open` · `aside` · `markdown` (the last rewrites any text
+  into clickable `file://` links, for use in a diagram or the session mirror).
+- `/tern files [list|preview|open|aside] [ref|index]` for the same thing by hand.
+- Assistant replies are scanned on `message_end`, so the references are known without asking.
+
+### Inline markdown preview instead of an unasked full block
+
+- **In native mode:** the **`aside` sheet** — Tern's own right-edge panel, draggable width, its own
+  scroll — holding an `md` node of the referenced file with `[Open in split](file://…)` as the first
+  line. That link *is* the button.
+- **Everywhere else:** `tern open --preview` — Tern's preview block, which is small, sits beside the
+  work, and keeps the focus. This route needs no protocol at all and works today from a T3-hosted
+  agent.
+- **Opt-in**, because opening things unasked is the behaviour this replaces: `PI_TERN_AUTO_PREVIEW=1`.
+  It prefers the newest existing markdown file and does nothing otherwise.
+
+### `tern_chart`, `tern_fleet`, `tern_worktree`, `tern_pr`, and the contract
+
+Unchanged from the earlier 1.1.0 notes below: data → themed SVG → native Tern image block, with
+`rsvg-convert` rasterizing locally so no visible window is needed; panes as threads; pure-git
+worktrees; PR state with a one-line verdict; and the capability manifest from
+`tern_status {manifest:true}`. All five new tools plus `tern_files` are `deferred` — **prompt
+footprint stays at +774 tokens with three declared tools.**
+
+### Standardisation
+
+`scripts/gate.sh` (types, lint, 61 tests, compat matrix, live no-pane surface check),
+`scripts/verify.ts` (19 live checks from outside a Tern pane), `scripts/tsp-probe.mjs` (protocol
+conformance), and `profile/` (install README + an `AGENTS.md` fragment).
+
+---
+
+## 1.1.0 — earlier notes
 
 **T3-shaped work and native figures. Everything here works with no Tern pane — only a
 running Tern daemon.**

@@ -49,6 +49,9 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 	let lastError = null;
 	let figureSeq = 0;
 	let figures = [];
+	let asideAdded = false;
+	const asideNodes = new Set();
+	const markdownNodes = new Map();
 
 	const send = (verb, body, params) => {
 		process.stdout.write(encodeMessage(verb, body, params));
@@ -164,6 +167,11 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 					if (msg.includes("unknown id main") || msg.includes("unknown id m")) {
 						mainAdded = false;
 						figures = [];
+						markdownNodes.clear();
+					}
+					if (msg.includes("unknown id aside")) {
+						asideAdded = false;
+						asideNodes.clear();
 					}
 					if (msg.includes("unknown id dock")) {
 						dockAdded = false;
@@ -199,7 +207,10 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 				surface,
 				seq,
 				features,
+				kinds: (hello?.kinds ?? []).length,
 				figures: figures.length,
+				markdownNodes: markdownNodes.size,
+				aside: asideAdded,
 				lastError,
 			};
 		},
@@ -210,35 +221,100 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 		 * `rows` node, so a figure added to `main` lands after the transcript — i.e. it
 		 * reads as the newest thing in the conversation.
 		 *
-		 * The blob wire shape is not yet confirmed against a live Tern, so it is
-		 * selectable with PI_TERN_BLOB_OP and every rejection is recorded in
-		 * nativeState().lastError. Requires the `blobs` feature in the hello.
+		 * ENCODING, established against Tern 0.5.0 by reading its own error channel:
+		 *   ["blob", id, mime, data]        -> error "unknown op blob"  (both 3- and 2-arg)
+		 *   {k:"image", p:{data, mime}}    -> accepted, no error
+		 *   {k:"image", p:{blob:{mime,data}}} -> accepted, no error
+		 * The blob store is a plugin/canvas API (`blob(bytes, mime)`), not a frame op, so
+		 * the bytes go inline in the node. `hello.features` advertises `blobs`, but that
+		 * only tells a canvas it may store one.
 		 */
 		figure({ data, mime = "image/png", caption } = {}) {
 			if (process.env.PI_TERN_INLINE_IMAGES !== "1") {
 				return { ok: false, reason: "inline images are opt-in: set PI_TERN_INLINE_IMAGES=1" };
 			}
-			if (!features.includes("blobs") && process.env.PI_TERN_FORCE !== "1") {
-				return { ok: false, reason: "Tern did not advertise the `blobs` feature" };
+			if (!features.includes("image") && (process.env.PI_TERN_FORCE !== "1" && !(hello?.kinds ?? []).includes("image"))) {
+				return { ok: false, reason: "Tern does not advertise an `image` node kind" };
 			}
 			if (typeof data !== "string" || data.length === 0) return { ok: false, reason: "no image data" };
 			open();
 			figureSeq += 1;
 			const id = `fig${figureSeq}`;
-			const blobId = `b${figureSeq}`;
-			const mode = process.env.PI_TERN_BLOB_OP ?? "id-mime-data";
-			const ops = [];
-			if (mode === "id-mime-data") ops.push(["blob", blobId, mime, data]);
-			else if (mode === "mime-data") ops.push(["blob", mime, data]);
-			const props = mode === "inline" ? { blob: { mime, data } } : { blob: blobId };
+			const props = { data, mime };
 			if (caption) props.caption = String(caption);
-			ops.push(["add", id, "main", null, { id, k: "image", p: props }]);
+			const ops = [["add", id, "main", null, { id, k: "image", p: props }]];
 			figures.push(id);
 			const keep = Math.max(1, Number(process.env.PI_TERN_INLINE_KEEP) || 3);
 			while (figures.length > keep) ops.push(["del", figures.shift()]);
 			seq += 1;
 			send("f", { sf: surface, s: seq, ops });
-			return { ok: true, id, ops: ops.length, mode, features };
+			return { ok: true, id, bytes: data.length, features };
+		},
+		/**
+		 * Publish or update a markdown node in the transcript.
+		 *
+		 * This is what makes file references clickable: Tern's own documentation says
+		 * `file://` links always open in Tern as a file block. A `rows` node is inert
+		 * text and can never be clicked, so anything the reader should be able to open
+		 * has to arrive as markdown.
+		 */
+		markdown({ text, id = "pf", caption } = {}) {
+			if (typeof text !== "string" || text.length === 0) return { ok: false, reason: "no markdown text" };
+			open();
+			const props = { text };
+			if (caption) props.caption = String(caption);
+			const known = markdownNodes.get(id);
+			const ops = known
+				? [["set", id, props]]
+				: [["add", id, "main", null, { id, k: "md", p: props }]];
+			markdownNodes.set(id, true);
+			seq += 1;
+			send("f", { sf: surface, s: seq, ops });
+			return { ok: true, id, chars: text.length, updated: Boolean(known) };
+		},
+		/**
+		 * Show a right-edge sheet: the small panel with its own scrollbar.
+		 *
+		 * `aside` is advertised in the 0.5.0 hello, and the build's own CSS calls it
+		 * "a sheet docked at the pane's right edge, as wide as the host reserves
+		 * (--tv-aside)" with a draggable width. The region root is added the same way
+		 * `main` is — under the surface id.
+		 */
+		aside({ markdown, title, link, id = "aside", nodeId = "pn" } = {}) {
+			if (!features.includes("aside") && process.env.PI_TERN_FORCE !== "1") {
+				return { ok: false, reason: "Tern did not advertise the `aside` feature" };
+			}
+			if (typeof markdown !== "string" || markdown.length === 0) return { ok: false, reason: "no markdown for the aside" };
+			open();
+			const text = [title ? `### ${title}` : null, link ? `[Open in split](${link})` : null, markdown]
+				.filter(Boolean)
+				.join("\n\n");
+			const node = { id: nodeId, k: "md", p: { text } };
+			let ops;
+			if (!asideAdded) {
+				ops = [["add", id, surface, null, { id, k: "col", c: [node] }]];
+				asideAdded = true;
+			} else if (asideNodes.has(nodeId)) {
+				ops = [["set", nodeId, { text }]];
+			} else {
+				ops = [["add", nodeId, id, null, node]];
+			}
+			asideNodes.add(nodeId);
+			seq += 1;
+			send("f", { sf: surface, s: seq, ops });
+			return { ok: true, id, node: nodeId, chars: text.length };
+		},
+		showAside() {
+			if (!asideAdded) return { ok: false, reason: "no aside is open" };
+			seq += 1;
+			send("f", { sf: surface, s: seq, ops: [["show", "aside"]] });
+			return { ok: true };
+		},
+		hideAside() {
+			if (!asideAdded) return { ok: false, reason: "no aside is open" };
+			seq += 1;
+			send("f", { sf: surface, s: seq, ops: [["hide", "aside"]] });
+			return { ok: true };
 		},
 		/** Emit a bare frame op list (for probing new Tern node kinds). */
 		frame(ops) {

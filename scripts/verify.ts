@@ -129,7 +129,7 @@ try {
 try {
 	const environment = await gatherEnvironment(env);
 	const manifest = buildManifest(
-		{ version: "1.1.0", directTools: ["tern_status", "tern_run", "tern_browser"], deferredTools: [], probe: { status: "idle", hello: null } },
+		{ version: "1.1.1", directTools: ["tern_status", "tern_run", "tern_browser"], deferredTools: [], probe: { status: "idle", hello: null } },
 		environment,
 	);
 	const available = manifest.capabilities.filter((item) => item.available);

@@ -51,10 +51,10 @@ import { relayPing } from "./lib/relay.ts";
 import { runShellInTern } from "./lib/run.ts";
 import { loadState, saveState } from "./lib/state.ts";
 import { insideMultiplexer, readTernEnv, requireTernCli, runTern, scratchDir, type TernEnv } from "./lib/tern.ts";
-import { cleanShellBlock, extractMermaids, extractShellBlocks, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
+import { describeRefs, linkifyFileRefs, parseFileRefs, type FileRef } from "./lib/refs.ts";import { cleanShellBlock, extractMermaids, extractShellBlocks, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
 import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, normalizeOsc877, type TspHello } from "./lib/tsp.ts";
 
-const PI_TERN_VERSION = "1.1.0";
+const PI_TERN_VERSION = "1.1.1";
 
 /** The only tools declared to the model; everything else is `deferred` (no schema, no listing). */
 const DIRECT_TOOLS = new Set(["tern_status", "tern_run", "tern_browser"]);
@@ -63,6 +63,7 @@ const DIRECT_TOOLS = new Set(["tern_status", "tern_run", "tern_browser"]);
 const DEFERRED_TOOL_NAMES = [
 	"tern_diagram",
 	"tern_chart",
+	"tern_files",
 	"tern_capture",
 	"tern_panes",
 	"tern_ctl",
@@ -96,6 +97,9 @@ let probeDeadline: ReturnType<typeof setTimeout> | undefined;
 let unsubscribeInput: (() => void) | undefined;
 let lastBrowserBlock: number | undefined;
 const browserTabs: number[] = [];
+/** File references seen in the newest assistant reply, for tern_files and auto-preview. */
+let lastRefs: FileRef[] = [];
+let lastRefsAt = 0;
 
 // ── Phase A state ────────────────────────────────────────────────────────
 let lastMermaid: { source: string; at: number; hash: string } | null = null;
@@ -385,6 +389,106 @@ function asText(text: string) {
 }
 
 /**
+ * Pick one reference: by index into the last list, by path, or by default preference
+ * (an existing markdown file first — that is what an inline preview is usually for).
+ */
+function resolveRef(refs: FileRef[], wanted: string | undefined, cwd: string): FileRef {
+	if (wanted !== undefined && /^\d+$/.test(wanted.trim())) {
+		const index = Number(wanted.trim());
+		const picked = refs[index];
+		if (!picked) throw new Error(`no reference at index ${index} (${refs.length} known)`);
+		return picked;
+	}
+	if (wanted && wanted.trim()) {
+		const [parsed] = parseFileRefs(wanted.trim(), { cwd, limit: 1 });
+		if (parsed) return parsed;
+		return {
+			raw: wanted.trim(),
+			abs: path.isAbsolute(wanted.trim()) ? wanted.trim() : path.resolve(cwd, wanted.trim()),
+			exists: existsSync(path.isAbsolute(wanted.trim()) ? wanted.trim() : path.resolve(cwd, wanted.trim())),
+			isDirectory: false,
+			kind: "other",
+			source: "bare",
+		};
+	}
+	const preferred = refs.find((ref) => ref.exists && ref.kind === "markdown") ?? refs.find((ref) => ref.exists) ?? refs[0];
+	if (!preferred) throw new Error("no file references known yet (mention a file, or pass ref)");
+	return preferred;
+}
+
+/**
+ * Remember the files an assistant reply refers to, and optionally act on them.
+ *
+ * Two things consume this. `tern_files` lets the agent list and open them, and the
+ * native sink can show the referenced markdown in the aside sheet instead of opening
+ * a whole file block unasked — the behaviour that annoyed the user before.
+ */
+function collectFileRefs(message: unknown): void {
+	try {
+		const text = messageText(message);
+		if (!text || !/[.~/]/.test(text)) return;
+		const refs = parseFileRefs(text, { cwd: process.cwd(), limit: 25 });
+		if (refs.length === 0) return;
+		lastRefs = refs;
+		lastRefsAt = Date.now();
+		maybePreviewRefs(refs);
+	} catch {
+		/* reference detection must never break a turn */
+	}
+}
+
+/**
+ * Auto-preview is opt-in (PI_TERN_AUTO_PREVIEW=1) because opening things unasked is
+ * exactly what this is meant to fix. The panel is the aside sheet in native mode and
+ * `tern open --preview` otherwise; neither steals focus from what the human is doing.
+ */
+function maybePreviewRefs(refs: FileRef[]): void {
+	if (process.env.PI_TERN_AUTO_PREVIEW !== "1") return;
+	const target = refs.find((ref) => ref.exists && ref.kind === "markdown") ?? refs.find((ref) => ref.exists);
+	if (!target?.abs) return;
+	const native = (globalThis as { __piTernNative?: { aside?: (input: unknown) => unknown } }).__piTernNative;
+	if (native?.aside) {
+		previewInAside(target).catch(() => undefined);
+		return;
+	}
+	openPreview(target).catch(() => undefined);
+}
+
+/** Open a file in Tern's preview block: small, beside the work, keeps the focus. */
+async function openPreview(ref: FileRef): Promise<{ path: string; block?: number }> {
+	if (!ref.abs || !ref.exists) throw new Error(`not a readable file: ${ref.raw}`);
+	const target = ref.line !== undefined ? `${ref.abs}:${ref.line}` : ref.abs;
+	const result = await runTern(["open", "--json", "--preview", target], 20000);
+	if (result.code !== 0) throw new Error(result.stderr.trim() || `tern open --preview exited ${result.code}`);
+	let block: number | undefined;
+	try {
+		block = (JSON.parse(result.stdout) as { blocks?: number[] }).blocks?.[0];
+	} catch {
+		block = undefined;
+	}
+	return { path: target, block };
+}
+
+/**
+ * Show a referenced file in the aside sheet with an "Open in split" link.
+ *
+ * The sheet is Tern's own right-edge aside (advertised in the 0.5.0 hello), and the
+ * link is what makes the full block one click away — `file://` links always open in
+ * Tern, which is the same mechanism that makes ordinary file references clickable.
+ */
+async function previewInAside(ref: FileRef): Promise<{ ok: boolean; reason?: string }> {
+	const sink = (globalThis as { __piTernNative?: { aside?: (input: unknown) => unknown } }).__piTernNative;
+	if (!sink?.aside) return { ok: false, reason: "native mode is not active" };
+	if (!ref.abs || !ref.exists) return { ok: false, reason: `not a readable file: ${ref.raw}` };
+	const body = readFileSync(ref.abs, "utf8");
+	const clipped = body.length > 12000 ? `${body.slice(0, 12000)}\n\n… (${body.length - 12000} more characters)` : body;
+	const result = sink.aside({ markdown: clipped, title: ref.raw, link: ref.url }) as
+		| { ok?: boolean; reason?: string }
+		| undefined;
+	return { ok: result?.ok === true, reason: result?.reason };
+}
+
+/**
  * Tool result for a figure: the text describes where it landed, and the PNG (when we
  * have one) is attached so the model can see the chart it just drew.
  *
@@ -488,6 +592,7 @@ export default function piTern(pi: ExtensionAPI) {
 	pi.on("message_end", async (event: any) => {
 		scanMessageForMermaid(event?.message);
 		scanMessageForShell(event?.message);
+		if (event?.message?.role === "assistant") collectFileRefs(event.message);
 		if (mirrorEnabled) {
 			const at = new Date();
 			const markdown = renderMessageMarkdown(event?.message, at);
@@ -1611,6 +1716,94 @@ export default function piTern(pi: ExtensionAPI) {
 		},
 	});
 
+	const filesTool = defineTool({
+		name: "tern_files",
+		label: "Tern files",
+		description:
+			"Work with the files the conversation refers to. `list` shows what the agent mentioned (resolved, with existence); `preview` opens one in Tern's small preview block (keeps focus — prefer it over a full split); `open` opens a full block at the right line; `aside` shows it in the right-edge sheet with an Open-in-split link (native mode); `markdown` returns text with every reference rewritten to a clickable file:// link, for use in a diagram or mirror.",
+		parameters: Type.Object({
+			action: Type.String({ description: "list|preview|open|aside|markdown" }),
+			ref: Type.Optional(Type.String({ description: "Path, or an index into the last list" })),
+			text: Type.Optional(Type.String({ description: "markdown: the text to linkify" })),
+			path: Type.Optional(Type.String({ description: "Where to resolve relative references (default cwd)" })),
+			kinds: Type.Optional(
+				Type.Array(Type.String(), { description: "list: only these kinds (markdown, image, pdf, code, data, other)" }),
+			),
+			limit: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params) {
+			const cwd = params.path ? path.resolve(params.path) : process.cwd();
+			const refs =
+				lastRefs.length > 0 && Date.now() - lastRefsAt < 10 * 60_000
+					? lastRefs
+					: parseFileRefs(params.text ?? "", { cwd, limit: params.limit ?? 25 });
+			switch (params.action) {
+				case "list": {
+					const filtered = params.kinds?.length
+						? refs.filter((ref) => params.kinds?.includes(ref.kind))
+						: refs;
+					const native = (globalThis as { __piTernNative?: unknown }).__piTernNative;
+					return asText(
+						JSON.stringify(
+							{
+								count: filtered.length,
+								nativeMode: Boolean(native),
+								refs: filtered.map((ref) => ({
+									raw: ref.raw,
+									path: ref.abs,
+									line: ref.line,
+									kind: ref.kind,
+									exists: ref.exists,
+									url: ref.url,
+								})),
+								hint: "preview opens the small panel; aside shows it in the right-edge sheet (native)",
+							},
+							null,
+							2,
+						),
+					);
+				}
+				case "markdown": {
+					const source = params.text ?? "";
+					if (!source) throw new Error("markdown needs text");
+					return asText(linkifyFileRefs(source, parseFileRefs(source, { cwd, limit: 40 })));
+				}
+				default: {
+					const chosen = resolveRef(refs, params.ref, cwd);
+					if (params.action === "preview") {
+						const native = (globalThis as { __piTernNative?: { aside?: unknown } }).__piTernNative;
+						if (native?.aside && process.env.PI_TERN_PREVIEW !== "block") {
+							const shown = await previewInAside(chosen);
+							if (shown.ok) {
+								return asText(`shown in the Tern aside sheet: ${chosen.raw} (Open in split link included)`);
+							}
+						}
+						await requireTernCli("tern_files preview");
+						const opened = await openPreview(chosen);
+						return asText(`preview open: ${opened.path}${opened.block !== undefined ? ` (block ${opened.block})` : ""}`);
+					}
+					if (params.action === "aside") {
+						const shown = await previewInAside(chosen);
+						return asText(
+							shown.ok
+								? `aside sheet updated: ${chosen.raw}`
+								: `aside unavailable: ${shown.reason ?? "unknown"} — native mode is required (PI_TERN_INLINE_IMAGES=1 and the pi-tern launcher)`,
+						);
+					}
+					if (params.action === "open") {
+						await requireTernCli("tern_files open");
+						if (!chosen.abs) throw new Error(`could not resolve: ${chosen.raw}`);
+						const target = chosen.line !== undefined ? `${chosen.abs}:${chosen.line}` : chosen.abs;
+						const result = await runTern(["open", target], 20000);
+						if (result.code !== 0) throw new Error(result.stderr.trim() || `tern open exited ${result.code}`);
+						return asText(`opened in Tern: ${target}`);
+					}
+					throw new Error(`unknown action '${params.action}' (list|preview|open|aside|markdown)`);
+				}
+			}
+		},
+	});
+
 	const directTools = DIRECT_TOOLS;
 	const ternNamespace = { name: "tern", description: "Tern terminal integration (sessions, browser, data, mirrors)." };
 	for (const tool of [
@@ -1638,6 +1831,7 @@ export default function piTern(pi: ExtensionAPI) {
 		worktreeTool,
 		prTool,
 		fleetTool,
+		filesTool,
 	]) {
 		const name = (tool as { name?: string }).name ?? "";
 		pi.registerTool(directTools.has(name) ? tool : ({ ...tool, exposure: "deferred", namespace: ternNamespace } as unknown as typeof tool));
@@ -1659,8 +1853,7 @@ export default function piTern(pi: ExtensionAPI) {
 						return;
 					}
 					case "capabilities":
-					case "contract": {
-						const environment = await gatherEnvironment(readTernEnv());
+					case "contract": {						const environment = await gatherEnvironment(readTernEnv());
 						ctx.ui.notify(
 							renderManifest(
 								buildManifest(
@@ -1711,6 +1904,54 @@ export default function piTern(pi: ExtensionAPI) {
 							),
 							"info",
 						);
+						return;
+					}
+					case "files": {
+						const action = trimmed.split(/\s+/)[1] ?? "list";
+						const refs =
+							lastRefs.length > 0
+								? lastRefs
+								: parseFileRefs(
+										lastMermaid?.source ?? "",
+										{ cwd: process.cwd(), limit: 25 },
+									);
+						if (action === "list") {
+							ctx.ui.notify(
+								refs.length > 0 ? describeRefs(refs) : "no file references seen yet in this session",
+								"info",
+							);
+							return;
+						}
+						try {
+							const chosen = resolveRef(refs, trimmed.split(/\s+/)[2], process.cwd());
+							if (action === "preview") {
+								const native = (globalThis as any).__piTernNative;
+								if (native?.aside) {
+									const shown = await previewInAside(chosen);
+									if (shown.ok) {
+										ctx.ui.notify(`shown in the aside sheet: ${chosen.raw}`, "info");
+										return;
+									}
+								}
+								await requireTernCli("tern files preview");
+								const opened = await openPreview(chosen);
+								ctx.ui.notify(`preview: ${opened.path}`, "info");
+								return;
+							}
+							if (action === "aside") {
+								const shown = await previewInAside(chosen);
+								ctx.ui.notify(shown.ok ? `aside: ${chosen.raw}` : `aside unavailable — ${shown.reason}`, shown.ok ? "info" : "warn");
+								return;
+							}
+							await requireTernCli("tern files open");
+							if (!chosen.abs) throw new Error(`could not resolve ${chosen.raw}`);
+							const target = chosen.line !== undefined ? `${chosen.abs}:${chosen.line}` : chosen.abs;
+							const result = await runTern(["open", target], 20000);
+							if (result.code !== 0) throw new Error(result.stderr.trim() || `tern open exited ${result.code}`);
+							ctx.ui.notify(`opened: ${target}`, "info");
+						} catch (error) {
+							ctx.ui.notify(error instanceof Error ? error.message : String(error), "warn");
+						}
 						return;
 					}
 					case "restore": {
