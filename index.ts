@@ -31,7 +31,7 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { browserOp } from "./lib/browser.ts";
 import { bootstrapControl, capturePane, controlCommand, listPanes, remoteHosts, shotScenarios, waitForText } from "./lib/ctl.ts";
@@ -141,7 +141,13 @@ function describeProbe(): string {
 	return lines.join("\n");
 }
 
-function registerProbe(ctx: { mode?: string; ui?: { onTerminalInput?: (h: (data: string) => unknown) => () => void } }): void {
+/**
+ * pi hands raw terminal input to this handler. Returning `consume: true` stops pi's TUI from also
+ * processing the bytes — which is what we want for the TSP reply and the DA1 answer that follows
+ * it, since neither is keystrokes. This is pi's own `TerminalInputHandler`; keeping the import
+ * means a pi change to the contract breaks the build instead of failing silently at runtime.
+ */
+function registerProbe(ctx: { mode?: string; ui?: Pick<ExtensionUIContext, "onTerminalInput"> }): void {
 	const env = readTernEnv();
 	if (!env.inTern) return;
 	if (process.env.PI_TERN_PROBE === "0") return;
@@ -156,7 +162,7 @@ function registerProbe(ctx: { mode?: string; ui?: { onTerminalInput?: (h: (data:
 
 	probe.status = "pending";
 	probe.probedAt = Date.now();
-	unsubscribeInput = ctx.ui.onTerminalInput((data: string) => {
+	unsubscribeInput = ctx.ui.onTerminalInput((data) => {
 		// TSP replies arrive as in-band APC strings; possibly split, possibly with DA1 after them.
 		if (pendingInput.length > 0 || looksLikeTsp(data)) {
 			pendingInput += data;
@@ -210,7 +216,7 @@ function registerProbe(ctx: { mode?: string; ui?: { onTerminalInput?: (h: (data:
 
 // ── Phase A: Tern chrome, diagrams from the transcript, session mirror ────
 
-function updateTitle(ctx: any): void {
+function updateTitle(ctx: ExtensionContext): void {
 	if (process.env.PI_TERN_TITLE === "0" || !readTernEnv().inTern) return;
 	try {
 		const model = String((ctx?.model as any)?.id ?? (ctx?.model as any)?.name ?? "pi").split("/").pop();
@@ -321,7 +327,7 @@ function flushMirror(): void {
 	}
 }
 
-function startMirror(ctx: any): void {
+function startMirror(ctx: ExtensionContext): void {
 	mirrorEnabled = true;
 	saveState({ mirror: { enabled: true } });
 	if (mirrorLines.length === 0) {
@@ -350,7 +356,7 @@ function startMirror(ctx: any): void {
 /** Last payload written, so an unchanged turn does not rewrite two files for nothing. */
 let lastDashboardFingerprint = "";
 
-function refreshBridge(ctx: any): void {
+function refreshBridge(ctx: ExtensionContext): void {
 	if (!readTernEnv().inTern && process.env.PI_TERN_FORCE !== "1") return;
 	try {
 		const env = readTernEnv();
@@ -757,7 +763,7 @@ async function captureWithRetry(
 	throw new Error(`capture failed: ${message}`);
 }
 export default function piTern(pi: ExtensionAPI) {
-	pi.on("session_start", async (_event: unknown, ctx: any) => {
+	pi.on("session_start", async (_event, ctx) => {
 		registerProbe(ctx);
 		updateTitle(ctx);
 		refreshBridge(ctx);
@@ -767,7 +773,7 @@ export default function piTern(pi: ExtensionAPI) {
 			.then((warning) => {
 				if (!warning) return;
 				updateTitle(ctx);
-				ctx.ui.notify(warning, "warn");
+				ctx.ui.notify(warning, "warning");
 			})
 			.catch(() => undefined);
 		// pi writes its own startup title; re-apply ours once it has settled.
@@ -802,7 +808,7 @@ export default function piTern(pi: ExtensionAPI) {
 		if (mirrorEnabled) appendMirror(renderToolMarkdown(event, new Date()));
 	});
 
-	pi.on("turn_end", async (_event: unknown, ctx: any) => {
+	pi.on("turn_end", async (_event, ctx) => {
 		updateTitle(ctx);
 		refreshBridge(ctx);
 	});
@@ -1161,7 +1167,7 @@ export default function piTern(pi: ExtensionAPI) {
 			]),
 			query: Type.Optional(Type.String({ description: "search: literal text to find in the mirror" })),
 		}),
-		async execute(_id, params, _signal, _onUpdate, ctx: any) {
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			switch (params.action) {
 				case "search": {
 					const query = (params.query ?? "").trim();
@@ -1360,7 +1366,7 @@ export default function piTern(pi: ExtensionAPI) {
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("install"), Type.Literal("refresh"), Type.Literal("status")]),
 		}),
-		async execute(_id, params, _signal, _onUpdate, ctx: any) {
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			if (params.action === "install") {
 				refreshBridge(ctx);
 				const result = await linkBridge();
@@ -1836,7 +1842,9 @@ export default function piTern(pi: ExtensionAPI) {
 					return asText(
 						comments.length === 0
 							? "no comments or reviews"
-							: comments.map((c) => `[${c.kind}] ${c.author} ${c.createdAt.slice(0, 16)}\n${c.body}`).join("\n\n"),
+							: comments
+									.map((c) => `[${c.kind}] ${c.author} ${(c.createdAt ?? "").slice(0, 16)}\n${c.body}`)
+									.join("\n\n"),
 					);
 				}
 				case "watch": {
@@ -1911,8 +1919,10 @@ export default function piTern(pi: ExtensionAPI) {
 						agentArgs,
 						worktree: params.worktree,
 					});
+					// `member` already carries `block`; spreading it first and naming `block`
+					// again would overwrite the spread with itself, so name the field once.
 					return asText(
-						JSON.stringify({ block: spawned.block, ...spawned.member, hint: "tern_fleet read/wait with this block id" }, null, 2),
+						JSON.stringify({ ...spawned.member, hint: "tern_fleet read/wait with this block id" }, null, 2),
 					);
 				}
 				case "list":
@@ -2066,7 +2076,7 @@ export default function piTern(pi: ExtensionAPI) {
 	pi.registerCommand("tern", {
 		description:
 			"Tern integration: status | capabilities | agent-setup | files | browser | run | mirror | diagram | diagnose | restore | native | bridge",
-		handler: async (args: string, ctx: any) => {
+		handler: async (args, ctx) => {
 			const trimmed = (args ?? "").trim();
 			const [sub = "status"] = trimmed.split(/\s+/);
 			try {
@@ -2098,7 +2108,7 @@ export default function piTern(pi: ExtensionAPI) {
 					case "native": {
 						const native = (globalThis as any).__piTernNative;
 						if (!native) {
-							ctx.ui.notify("native mode is not active (start pi through pi-tern inside Tern)", "warn");
+							ctx.ui.notify("native mode is not active (start pi through pi-tern inside Tern)", "warning");
 							return;
 						}
 						const action = trimmed.split(/\s+/)[1] ?? "status";
@@ -2151,7 +2161,7 @@ export default function piTern(pi: ExtensionAPI) {
 							ctx.ui.notify(
 								`could not update Tern settings: ${error instanceof Error ? error.message : String(error)}. ` +
 									`Set these two by hand in ${ternSettingsPath()}: "new_blocks": "Agent", "agent_command": ${JSON.stringify(launcher)}`,
-								"warn",
+								"warning",
 							);
 						}
 						return;
@@ -2190,7 +2200,7 @@ export default function piTern(pi: ExtensionAPI) {
 							}
 							if (action === "aside") {
 								const shown = await previewInAside(chosen);
-								ctx.ui.notify(shown.ok ? `aside: ${chosen.raw}` : `aside unavailable — ${shown.reason}`, shown.ok ? "info" : "warn");
+								ctx.ui.notify(shown.ok ? `aside: ${chosen.raw}` : `aside unavailable — ${shown.reason}`, shown.ok ? "info" : "warning");
 								return;
 							}
 							await requireTernCli("tern files open");
@@ -2200,7 +2210,7 @@ export default function piTern(pi: ExtensionAPI) {
 							if (result.code !== 0) throw new Error(result.stderr.trim() || `tern open exited ${result.code}`);
 							ctx.ui.notify(`opened: ${target}`, "info");
 						} catch (error) {
-							ctx.ui.notify(error instanceof Error ? error.message : String(error), "warn");
+							ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
 						}
 						return;
 					}

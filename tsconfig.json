@@ -6,11 +6,28 @@
 		"allowImportingTsExtensions": true,
 		"esModuleInterop": true,
 		"noEmit": true,
-		"strict": false,
-		"noImplicitAny": false,
+		"strict": true,
+		"noImplicitAny": true,
 		"skipLibCheck": true,
 		"lib": ["ES2022"],
-		"types": ["node"]
+		"types": ["node"],
+
+		// pi and typebox are resolved from the LOCAL pi installation when it is present, so a
+		// green `tsc` means the calls into pi are real calls against the shipped types rather
+		// than against a hand-written `any` stub. The stubs in types/ are a fallback for CI,
+		// where pi is not installed; `scripts/check-types.sh` reports which mode ran, and
+		// PI_TERN_STRICT_TYPES=1 makes the fallback a hard failure.
+		"paths": {
+			"@earendil-works/pi-coding-agent": ["./node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"],
+			"typebox": ["./node_modules/typebox/build/index.d.mts"]
+		}
 	},
-	"include": ["index.ts", "lib/**/*.ts", "test/**/*.ts", "types/**/*.d.ts"]
+	"include": [
+		"index.ts",
+		"lib/**/*.ts",
+		"test/**/*.ts",
+		"scripts/**/*.ts",
+		"types/**/*.d.ts",
+		"native/**/*.d.ts"
+	]
 }

@@ -149,8 +149,8 @@ test("tsp hello encodes and parses", () => {
 	const { messages } = extractMessages(raw);
 	assert.equal(messages.length, 1);
 	assert.equal(messages[0].verb, "q");
-	assert.equal(messages[0].body.q, "hello");
-	assert.equal(messages[0].body.app, "pi-test");
+	assert.equal(messages[0]?.body?.q, "hello");
+	assert.equal(messages[0]?.body?.app, "pi-test");
 	assert.ok(raw.endsWith("\x1b[c"));
 });
 

@@ -4,11 +4,16 @@
  * test/live.test.ts and the verification script.
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { detectRasterizer, niceMax, renderChartSvg } from "../lib/figure.ts";
 import { buildManifest, renderManifest, type Manifest } from "../lib/manifest.ts";
 import { prVerdict, safeSelector, type PrSummary } from "../lib/pr.ts";
 import { defaultWorktreePath } from "../lib/worktree.ts";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
 
 const data = [
 	{ label: "Bare pi", value: 4332 },
@@ -212,4 +217,31 @@ test("renderManifest prints one line per capability", () => {
 	assert.ok(text.includes("pi-tern 1.1.0 · contract 1"));
 	assert.ok(text.split("\n").some((line) => line.startsWith("ok  diagram.mermaid")));
 	assert.ok(text.split("\n").some((line) => line.startsWith("off ")));
+});
+
+test("pi notification levels are the ones pi actually accepts", () => {
+	// Regression: every event handler took `ctx: any`, so the typecheck could not see that pi's
+	// `notify` accepts "info" | "warning" | "error" and NOT "warn". pi's showExtensionNotify
+	// branches on "error" / "warning" / else, so a "warn" silently rendered as an ordinary status
+	// line — including the block-kind notice that 1.1.6 and 1.1.7 exist to show.
+	const source = readFileSync(path.join(here, "..", "index.ts"), "utf8");
+	const levels = [...source.matchAll(/ui\.notify\([^)]*?,\s*"(info|warn|warning|error)"\s*\)/g)].map((m) => m[1]);
+	assert.ok(levels.length > 0, "the source has notify calls to check");
+	const bad = [...new Set(levels)].filter((level) => !["info", "warning", "error"].includes(level));
+	assert.deepEqual(bad, [], `every notify level must be one pi accepts; found ${bad.join(", ")}`);
+	// The ternary form picks a level at runtime, so check it separately.
+	const ternary = source.match(/ui\.notify\([^)]*?\?\s*"(\w+)"\s*:\s*"(\w+)"/);
+	if (ternary) {
+		for (const level of ternary.slice(1)) {
+			assert.ok(["info", "warning", "error"].includes(level), `ternary notify level "${level}" is not one pi accepts`);
+		}
+	}
+});
+
+test("no event handler takes ctx as any", () => {
+	// The same `ctx: any` that hid the notify bug hid every other pi API mistake. Assert the
+	// shape stays typed so a future refactor cannot quietly reintroduce it.
+	const source = readFileSync(path.join(here, "..", "index.ts"), "utf8");
+	assert.equal(source.match(/ctx:\s*any/g), null, "no handler may take `ctx: any`");
+	assert.equal(source.match(/\(.*_event:\s*unknown/g), null, "event params should be inferred from pi's own types");
 });

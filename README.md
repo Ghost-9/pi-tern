@@ -81,8 +81,16 @@ shell block  →  blank pane, no error, no clue                                 
 
 So either:
 
-1. **Open an agent block** — the `+` menu's agent block (Tern calls it “New Agent Block”), or
-2. Make pi the agent Tern starts. Tern's `agent_command` setting is what an agent block runs:
+1. **Open an agent block deliberately** — Tern's palette can create one beside the focused pane, or
+2. **Run `/tern agent-setup` inside pi.** It writes the two settings Tern documents for this, after
+   backing up the file, and reports exactly what changed:
+
+   | Key | Tern's description | Value |
+   | --- | --- | --- |
+   | `new_blocks` | "what new tabs and splits open" | `"Agent"` |
+   | `agent_command` | "what a block runs: the login shell, or this" (defaults to `omp`) | the pi-tern launcher |
+
+   Or set them by hand:
 
 ```jsonc
 // ~/Library/Application Support/Tern/settings.json

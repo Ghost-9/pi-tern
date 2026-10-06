@@ -52,3 +52,13 @@ export function parseMessage(raw) {
 export function isHelloReply(message) {
 	return message?.verb === "r" && message.body?.r === "hello" && message.body?.v === TSP_VERSION;
 }
+
+/**
+ * Narrow a frame op's node slot to its `{ k, p }` descriptor, or undefined when the op carries
+ * no node (a `del` or a `set` on a region). Exists so the strict typecheck in test/native-sink
+ * can read `op[4].k` without a cast — positional frame ops are otherwise untyped there.
+ */
+export function nodeOf(op) {
+	const candidate = Array.isArray(op) ? op[4] : undefined;
+	return typeof candidate === "object" && candidate !== null ? candidate : undefined;
+}

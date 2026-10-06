@@ -1,5 +1,58 @@
 # Changelog
 
+## 1.1.8 - 2026-10-06
+
+**The gate stopped being able to lie, and it had been lying about three things.**
+
+An independent audit found that `tsc --noEmit` was near-vacuous: `strict: false`,
+`noImplicitAny: false`, and a **15-line** `any` stub standing in for the entire pi and typebox API.
+Wiring the real types in immediately found **four real defects** that had shipped.
+
+### The bugs the strict pass found
+
+1. **`ctx.ui.notify(msg, "warn")` in five places.** pi accepts `"info" | "warning" | "error"` — not
+   `"warn"`. Its `showExtensionNotify` branches on `error` / `warning` / **else**, so every one of
+   those calls silently rendered as an ordinary status line instead of a warning. That includes the
+   **block-kind notice from 1.1.6 and 1.1.7** — the two releases whose entire purpose is telling the
+   user why their pane is not going native. All fixed to `"warning"`, with a regression test.
+2. **`c.createdAt.slice(...)`** in the PR comments view, where `createdAt` is optional. A comment
+   with no timestamp threw instead of rendering.
+3. **`{ block: spawned.block, ...spawned.member }`** named `block` twice; the member spread already
+   carries it, so the first was dead code that read as an override.
+4. **Eight `ctx: any` event handlers** removed. Every pi API call in the extension is now checked
+   against the shipped `ExtensionAPI`, `ExtensionContext` and `ExtensionUIContext` types.
+
+### What actually changed
+
+- **pi and typebox are real devDependencies** (`@earendil-works/pi-coding-agent`, `typebox`), and
+  `types/pi.d.ts` / `types/typebox.d.ts` — the `any` stubs — are **deleted**. Nothing shadows them.
+- `tsconfig.json`: `strict: true`, `noImplicitAny: true`, and `native/**/*.d.ts` added to `include`.
+- **`native/` is now typechecked and linted.** It is plain `.mjs` with no build step, so
+  `native/native.d.mts` declares its surface and `scripts/check-native-types.mjs` fails when a
+  declaration names an export the module does not have, **in both directions**. Every one of
+  1.1.5-1.1.7 was a launcher fix and the directory was in neither the typecheck nor the lint glob.
+- `native/tsp.mjs` gains `nodeOf()`, so the sink tests read a frame op's node slot without a cast.
+
+The typecheck now catches a bad pi method, a bad notify level, and a bad event name — all three
+verified by deliberately introducing each and watching the build fail.
+
+### The gate
+
+`scripts/gate.sh` ran **three** of the six test files (47 tests) while `npm test` ran six (80), and
+the changelog headline said "80/80 Gate" — describing a command the gate does not run. The test list
+is now defined once in the gate and matches `npm test`. `native/` was added to the lint glob, the
+declaration check became step 3, and every step prints its counts:
+
+```
+ok   tests 82 pass 82 fail 0 skipped 0 todo 0
+GATE PASSED (7 run, 0 skip)
+```
+
+Skips are now counted and reported: `GATE PASSED (5 run, 2 skip)`. `PI_TERN_REQUIRE_ALL=1` turns any
+skip into a failure, for gating a release where "checked nothing" must not read as "all clear".
+
+Gate: **82/82 unit - 7/7 compat - 19/19 live - strict typecheck clean.**
+
 ## 1.1.7 — 2026-10-06
 
 **The block notice is said once, and it now comes with the command that fixes it.**

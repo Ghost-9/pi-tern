@@ -8,6 +8,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createNativeSink } from "../native/backend.mjs";
+import { nodeOf } from "../native/tsp.mjs";
+import type { FrameNode, FrameOp } from "../native/native.d.mts";
+
+/** One decoded frame as captured off the pty. */
+type CapturedFrame = { verb: string; body?: unknown };
 
 const HELLO = {
 	cols: 80,
@@ -17,8 +22,8 @@ const HELLO = {
 };
 
 /** Capture every frame the sink writes and parse the JSON body of each. */
-function capture() {
-	const frames = [];
+function capture(): { frames: CapturedFrame[]; restore: () => void } {
+	const frames: CapturedFrame[] = [];
 	const original = process.stdout.write.bind(process.stdout);
 	process.stdout.write = ((chunk) => {
 		const text = String(chunk);
@@ -50,8 +55,12 @@ function capture() {
 	};
 }
 
-function ops(frames) {
-	return frames.flatMap((frame) => (frame.verb === "f" ? (frame.body.ops ?? []) : []));
+function ops(frames: CapturedFrame[]): FrameOp[] {
+	return frames.flatMap((frame) => {
+		if (frame.verb !== "f") return [];
+		const body = frame.body as { ops?: FrameOp[] } | undefined;
+		return body?.ops ?? [];
+	});
 }
 
 test("the sink opens one inline surface and adds region roots under the surface id", () => {
@@ -61,9 +70,10 @@ test("the sink opens one inline surface and adds region roots under the surface 
 		sink.markdown({ text: "# hello" });
 		const open = cap.frames.find((frame) => frame.verb === "o");
 		assert.ok(open, "an open frame was sent");
-		assert.equal(open.body.id, "test1");
-		assert.equal(open.body.mode, "inline");
-		assert.equal(open.body.listen, false);
+		const body = open.body as { id?: string; mode?: string; listen?: boolean };
+		assert.equal(body.id, "test1");
+		assert.equal(body.mode, "inline");
+		assert.equal(body.listen, false);
 		const adds = ops(cap.frames).filter((op) => op[0] === "add");
 		assert.ok(
 			adds.some((op) => op[1] === "main" && op[2] === "test1"),
@@ -82,9 +92,10 @@ test("markdown emits an md node, never a blob op", () => {
 		assert.equal(result.ok, true);
 		const all = ops(cap.frames);
 		assert.equal(all.filter((op) => op[0] === "blob").length, 0, "blob is not a frame op");
-		const add = all.find((op) => op[0] === "add" && op[4]?.k === "md");
+		const add = all.find((op) => op[0] === "add" && nodeOf(op)?.k === "md");
 		assert.ok(add, "an md node was added");
-		assert.equal(add[4].p.text, "**bold**");
+		const node = nodeOf(add);
+		assert.equal(node?.p?.text, "**bold**");
 	} finally {
 		cap.restore();
 	}
@@ -103,10 +114,10 @@ test("figure is opt-in and, when enabled, carries inline image bytes", () => {
 		assert.equal(allowed.ok, true);
 		const all = ops(cap.frames);
 		assert.equal(all.filter((op) => op[0] === "blob").length, 0, "still no blob op");
-		const image = all.find((op) => op[4]?.k === "image");
+		const image = all.find((op) => nodeOf(op)?.k === "image");
 		assert.ok(image, "an image node was added");
-		assert.equal(image[4].p.data, "AAAA");
-		assert.equal(image[4].p.mime, "image/png");
+		assert.equal(nodeOf(image)?.p?.data, "AAAA");
+		assert.equal(nodeOf(image)?.p?.mime, "image/png");
 	} finally {
 		if (previous === undefined) delete process.env.PI_TERN_INLINE_IMAGES;
 		else process.env.PI_TERN_INLINE_IMAGES = previous;
@@ -122,11 +133,11 @@ test("chart refuses when the kind is not advertised and sends bars when it is", 
 		const sink = createNativeSink({ hello: HELLO, surfaceId: "test1" });
 		const sent = sink.chart({ series: [{ label: "a", value: 1 }], title: "T" });
 		assert.equal(sent.ok, true);
-		const node = ops(cap.frames).find((op) => op[4]?.k === "chart");
+		const node = ops(cap.frames).find((op) => nodeOf(op)?.k === "chart");
 		assert.ok(node, "a chart node was added");
-		assert.equal(node[4].p.kind, "bars");
-		assert.deepEqual(node[4].p.bars, [{ label: "a", value: 1 }]);
-		assert.equal(node[4].p.title, "T");
+		assert.equal(nodeOf(node)?.p?.kind, "bars");
+		assert.deepEqual(nodeOf(node)?.p?.bars, [{ label: "a", value: 1 }]);
+		assert.equal(nodeOf(node)?.p?.title, "T");
 	} finally {
 		cap.restore();
 	}
@@ -141,10 +152,13 @@ test("the aside region is a root under the surface, carrying an md node", () => 
 		const root = ops(cap.frames).find((op) => op[0] === "add" && op[1] === "aside");
 		assert.ok(root, "the aside root was added");
 		assert.equal(root[2], "test1", "under the surface id");
-		assert.equal(root[4].k, "col");
-		const node = root[4].c[0];
-		assert.equal(node.k, "md");
-		assert.ok(node.p.text.includes("[Open in split](file:///tmp/a.md)"), "the button is a link");
+		assert.equal(nodeOf(root)?.k, "col");
+		const children = (nodeOf(root)?.c ?? []) as FrameNode[];
+		assert.equal(children[0]?.k, "md");
+		assert.ok(
+			String(children[0]?.p?.text).includes("[Open in split](file:///tmp/a.md)"),
+			"the button is a link",
+		);
 	} finally {
 		cap.restore();
 	}
