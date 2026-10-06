@@ -66,14 +66,22 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Verify the version is on npm
+        # npm answers "+ pi-tern@1.1.9" and then says the package "is being processed and may take a
+        # few minutes to become available". Querying immediately after returns the old version list,
+        # so this polls rather than asking once - a single check failed a genuinely successful
+        # publish, which is worse than no check at all.
         run: |
           VERSION="$(node -p "require('./package.json').version")"
-          PUBLISHED="$(npm view pi-tern versions --json 2>/dev/null | tr -d ' "[]' | tr ',' '\n' | grep -x "$VERSION" || true)"
-          if [ -z "$PUBLISHED" ]; then
-            echo "::error::$VERSION is not on npm - the publish failed for a real reason"
-            exit 1
-          fi
-          echo "$VERSION is on npm"
+          for attempt in $(seq 1 30); do
+            if npm view pi-tern versions --json 2>/dev/null | tr -d ' "[]' | tr ',' '\n' | grep -qx "$VERSION"; then
+              echo "$VERSION is on npm (after $attempt attempt(s))"
+              exit 0
+            fi
+            echo "  not yet on npm; retrying ($attempt/30)"
+            sleep 10
+          done
+          echo "::error::$VERSION is not on npm after 5 minutes - the publish failed for a real reason"
+          exit 1
       - name: Create the GitHub Release
         # After the publish is confirmed, so a failed publish never leaves a Release pointing at a
         # version nobody can install. --generate-notes turns the conventional commits into notes.
