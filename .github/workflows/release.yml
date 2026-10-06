@@ -85,15 +85,18 @@ jobs:
         # publish, which is worse than no check at all.
         run: |
           VERSION="$(node -p "require('./package.json').version")"
-          for attempt in $(seq 1 30); do
+          # Fifteen minutes, because that is roughly what it took: the publish step printed
+          # "+ pi-tern@1.1.10" at 17:20:11 and npm recorded the version at 17:27:40. A five-minute
+          # window failed a publish that had succeeded, which is the same failure as having no check.
+          for attempt in $(seq 1 90); do
             if npm view pi-tern versions --json 2>/dev/null | tr -d ' "[]' | tr ',' '\n' | grep -qx "$VERSION"; then
               echo "$VERSION is on npm (after $attempt attempt(s))"
               exit 0
             fi
-            echo "  not yet on npm; retrying ($attempt/30)"
+            echo "  not yet on npm; retrying ($attempt/90)"
             sleep 10
           done
-          echo "::error::$VERSION is not on npm after 5 minutes - the publish failed for a real reason"
+          echo "::error::$VERSION is not on npm after 15 minutes - the publish failed for a real reason"
           exit 1
       - name: Create the GitHub Release
         if: startsWith(github.ref_name, 'v')
