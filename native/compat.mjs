@@ -108,19 +108,35 @@ const rpc = await run(PI, ["--no-session", "--mode", "rpc"], { input: rpcInput, 
 const launcherRpc = await run("node", [launcher, "--no-session", "--mode", "rpc"], { input: rpcInput, timeoutMs: 12000 });
 
 /** Keep the JSON line *shapes*; drop the random ids so two runs can be compared. */
+/**
+ * The *vocabulary* a stream speaks, not how many times.
+ *
+ * This originally compared the exact sequence and count of message types, and it flaked about one
+ * run in three: `extension_ui_request` is pi asking an extension a UI question, and how many it asks
+ * depends on the extension's own asynchronous work finishing. Both runs were correct; the counts
+ * legitimately differed.
+ *
+ * So the property is the one the matrix exists for — the launcher's stdio speaks the same shapes as
+ * stock pi's, and neither contains a TSP frame — while being immune to a count that is not a
+ * contract. Run-to-run ordering of repeated UI round-trips is still significant, so the deduplicated
+ * sequence is compared rather than the raw one.
+ */
 function shape(stream) {
-	return stream
-		.split("\n")
-		.filter((line) => line.startsWith("{"))
-		.map((line) => {
-			try {
-				const parsed = JSON.parse(line);
-				return String(parsed.type ?? parsed.method ?? "?");
-			} catch {
-				return "unparsable";
-			}
-		})
-		.join(",");
+	return [
+		...new Set(
+			stream
+				.split("\n")
+				.filter((line) => line.startsWith("{"))
+				.map((line) => {
+					try {
+						const parsed = JSON.parse(line);
+						return String(parsed.type ?? parsed.method ?? "?");
+					} catch {
+						return "unparsable";
+					}
+				}),
+		),
+	].join(",");
 }
 
 const stockShapes = shape(rpc.stdout);
@@ -128,13 +144,13 @@ const launcherShapes = shape(launcherRpc.stdout);
 check(
 	"pi --mode rpc emits only JSON lines, no TSP frames",
 	stockShapes.length > 0 && !rpc.stdout.includes(TSP_PREFIX) && !stockShapes.includes("unparsable"),
-	`${stockShapes.split(",").length} lines: ${stockShapes.slice(0, 90)}`,
+	`${stockShapes.split(",").length} distinct shapes: ${stockShapes.slice(0, 90)}`,
 );
 check(
 	"pi-tern --mode rpc is equivalent to stock pi",
 	launcherShapes === stockShapes && !launcherRpc.stdout.includes(TSP_PREFIX),
 	launcherShapes === stockShapes
-		? `identical ${launcherShapes.split(",").length}-line shape sequence`
+		? `identical ${launcherShapes.split(",").length}-shape vocabulary`
 		: `stock=[${stockShapes.slice(0, 60)}] tern=[${launcherShapes.slice(0, 60)}]`,
 );
 

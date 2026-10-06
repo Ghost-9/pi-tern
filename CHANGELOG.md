@@ -27,6 +27,12 @@ One of the four new tests reads `.github/workflows/release.yml`, which is not sh
 rather than failing when the file is absent, and says why: failing would make the shipped suite
 unrunnable and passing silently would claim a check that did not run.
 
+The compatibility matrix's RPC differential also stopped flaking. It compared the exact sequence and
+count of message types, and failed about one run in three: `extension_ui_request` is pi asking an
+extension a UI question, and how many it asks depends on the extension's own asynchronous work. Both
+runs were correct. It now compares the deduplicated *vocabulary*, which is the property the matrix
+exists for, and is still verified to catch a real TSP leak.
+
 Gate: **134/134 unit - 10/10 gate steps - 7/7 compat - 19/19 live - strict typecheck clean**, and
 **134/134 from the packed tarball**.
 
