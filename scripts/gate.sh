@@ -13,8 +13,12 @@
 # Every step reports a count. A skipped step says SKIP and is counted separately, so a green
 # run can never be read as "checked everything": the last line is `GATE PASSED (N run, M skip)`.
 #
-#   PI_TERN_SKIP_LIVE=1   skip the steps that need a running Tern (5, 6); costs ~30 s
+#   PI_TERN_SKIP_LIVE=1   skip the steps that need a running Tern (6, 7); costs ~30 s
 #   PI_TERN_REQUIRE_ALL=1 turn any skip into a failure — use this to gate a release
+#
+# The full compat matrix (7 checks) spends model calls, so it needs credentials and a working
+# model. CI runs the static tier (`native/compat.mjs --static`), which covers the guarantee that
+# actually broke: the launcher's stdio is shape-identical to stock pi's, with no TSP frame.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 

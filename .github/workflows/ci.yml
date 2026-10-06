@@ -15,8 +15,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-      - name: Protocol tests (no Tern required)
-        run: node --experimental-strip-types --test test/protocol.test.ts test/native.test.ts test/features.test.ts test/refs.test.ts test/bridge-luau.test.ts test/native-sink.test.ts
+      - run: npm ci --no-audit --no-fund
+      # `npm test` is the single definition of the unit suite; scripts/gate.sh runs the same list.
+      # Do not enumerate files here: that is how the gate drifted to 3 of 6 while the headline
+      # kept claiming 80/80.
+      - name: Unit tests (no Tern required)
+        run: npm test
 
   checks:
     runs-on: ubuntu-latest
@@ -25,11 +29,31 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm install --no-audit --no-fund
-      - name: Typecheck
+      - run: npm ci --no-audit --no-fund
+      - name: Typecheck (strict, against the real pi and typebox types)
         run: npm run typecheck
       - name: Lint
         run: npm run lint
+      # native/ is plain .mjs, so its types are hand-written; this fails when a declaration
+      # names an export the module does not have, in either direction.
+      - name: Native declarations match the modules
+        run: node scripts/check-native-types.mjs
+
+  compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --no-audit --no-fund
+      # The "never break stock pi" guarantee. This used to run on one laptop only, which is how
+      # two RPC checks passed for the wrong reason for three releases: they asserted on
+      # substrings the output never contained and used JSON-RPC's {id, method} where pi uses
+      # {id, type}. The static tier needs no model call, so it can run here; the model-calling
+      # half needs credentials and stays a local `npm run gate` step.
+      - name: Compatibility matrix (static tier, no model call)
+        run: node native/compat.mjs --static
 
   coverage:
     runs-on: ubuntu-latest
@@ -38,5 +62,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - run: npm ci --no-audit --no-fund
       - name: Coverage (protocol tests)
         run: node --experimental-strip-types --test --experimental-test-coverage test/protocol.test.ts test/features.test.ts test/refs.test.ts

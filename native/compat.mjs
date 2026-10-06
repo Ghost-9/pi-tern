@@ -3,6 +3,16 @@
  * Compatibility matrix: pi-tern must be invisible outside Tern.
  * Runs the real managed pi and the launcher in every non-interactive mode and
  * asserts clean output, no crash, and no TSP traffic.
+ *
+ * Two tiers, because CI cannot run the model-calling half:
+ *
+ *   node native/compat.mjs            every check (needs `pi` on PATH and a working model)
+ *   node native/compat.mjs --static   only the checks that need no model call
+ *
+ * The static tier is what GitHub Actions runs. It covers the property that actually broke: the
+ * launcher's stdio must be shape-identical to stock pi's, with no TSP frame in either stream. The
+ * full tier additionally asserts that `pi -p` still returns a model reply, which needs credentials,
+ * so it stays a local gate step where those exist.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync } from "node:fs";
@@ -40,15 +50,30 @@ function check(name, ok, detail) {
 	console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? ` — ${detail.slice(0, 140)}` : ""}`);
 }
 
+// --static skips only the checks that spend a model call. Everything else runs in both tiers.
+const STATIC_ONLY = process.argv.includes("--static");
+const label = STATIC_ONLY ? "static tier" : "full tier";
+
 rmSync(record, { force: true });
+console.log(`compatibility matrix (${label})\n`);
+
 const version = spawnSync("pi", ["--version"], { encoding: "utf8" });
+if (version.error || version.status !== 0) {
+	// A loud, specific failure beats a cascade of confusing ones: without `pi` on PATH none of
+	// the comparisons below mean anything.
+	console.error(`FATAL: could not run \`pi --version\`: ${version.error?.message ?? `exit ${version.status}`}`);
+	console.error("pi-tern's compat matrix runs the real managed pi. Install pi, or run the test suite instead.");
+	process.exit(1);
+}
 check("pi --version", /1\.\d+\.\d+/.test(version.stdout), version.stdout.trim());
 
-const print = await run("pi", ["--no-session", "-p", "reply with exactly: OK"]);
-check("pi -p (print)", print.code === 0 && print.stdout.includes("OK"), print.stdout.trim() || print.stderr.trim());
+if (!STATIC_ONLY) {
+	const print = await run("pi", ["--no-session", "-p", "reply with exactly: OK"]);
+	check("pi -p (print)", print.code === 0 && print.stdout.includes("OK"), print.stdout.trim() || print.stderr.trim());
 
-const json = await run("pi", ["--no-session", "--mode", "json", "-p", "reply with exactly: OK"]);
-check("pi --mode json", json.code === 0 && json.stdout.includes('"'), `${json.stdout.slice(0, 80)} ${json.stderr.slice(0, 80)}`);
+	const json = await run("pi", ["--no-session", "--mode", "json", "-p", "reply with exactly: OK"]);
+	check("pi --mode json", json.code === 0 && json.stdout.includes('"'), `${json.stdout.slice(0, 80)} ${json.stderr.slice(0, 80)}`);
+}
 
 // pi's RPC mode keeps the stream open on extension UI requests until the client
 // answers them, so a caller that closes stdin never receives the get_commands reply.
@@ -93,15 +118,22 @@ check(
 		: `stock=[${stockShapes.slice(0, 60)}] tern=[${launcherShapes.slice(0, 60)}]`,
 );
 
-const launcherPrint = await run("node", [launcher, "--no-session", "-p", "reply with exactly: OK"]);
-check(
-	"pi-tern -p falls back to stock (no probe)",
-	launcherPrint.code === 0 && launcherPrint.stdout.includes("OK"),
-	launcherPrint.stdout.trim() || launcherPrint.stderr.trim(),
-);
+if (!STATIC_ONLY) {
+	const launcherPrint = await run("node", [launcher, "--no-session", "-p", "reply with exactly: OK"]);
+	check(
+		"pi-tern -p falls back to stock (no probe)",
+		launcherPrint.code === 0 && launcherPrint.stdout.includes("OK"),
+		launcherPrint.stdout.trim() || launcherPrint.stderr.trim(),
+	);
+}
 
 check("no TSP traffic in any non-Tern mode", !existsSync(record), existsSync(record) ? readFileSync(record, "utf8").slice(0, 120) : "");
 
 const failed = results.filter((entry) => !entry.ok).length;
-console.log(`\n${results.length - failed}/${results.length} checks passed`);
+console.log(`\n${results.length - failed}/${results.length} checks passed (${label})`);
+if (STATIC_ONLY && results.length < 3) {
+	// A "passing" static tier that checked almost nothing is the silent-skip failure mode again.
+	console.error(`FATAL: the static tier only ran ${results.length} check(s); expected at least 3.`);
+	process.exit(1);
+}
 process.exit(failed === 0 ? 0 : 1);

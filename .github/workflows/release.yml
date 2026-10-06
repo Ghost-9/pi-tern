@@ -6,7 +6,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  # `contents: write` is what creates the Release page. It was `read`, so the workflow published
+  # to npm and created no Release: the repo's "Latest" badge sat at v1.0.1 while npm served
+  # 1.1.7, and the tag carrying the v1.1.2 data-plane P0 — the one where an upgrade is
+  # mandatory — had no page for anyone to find.
+  contents: write
   id-token: write
 
 jobs:
@@ -14,15 +18,44 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-      - name: Protocol tests
-        run: node --experimental-strip-types --test test/protocol.test.ts test/native.test.ts test/features.test.ts test/refs.test.ts test/bridge-luau.test.ts test/native-sink.test.ts
+      - run: npm ci --no-audit --no-fund
+      # The whole suite, not a hand-listed subset. `npm test` is the single definition; a
+      # release must not be able to publish on a subset that the local gate runs in full.
+      - name: Unit tests
+        run: npm test
+      - name: Typecheck (strict)
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Native declarations match the modules
+        run: node scripts/check-native-types.mjs
+      - name: Compatibility matrix (static tier)
+        run: node native/compat.mjs --static
       - name: Publish to npm
         # npm trusted publishing (OIDC) must be configured for this repo/workflow.
         # An NPM_TOKEN secret also works (it then takes precedence over OIDC).
         run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Create the GitHub Release
+        # After the npm publish, so a failed publish never leaves a Release pointing at a version
+        # nobody can install. --generate-notes turns the conventional commits into release notes.
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          # `gh release create` fails if one already exists; make this re-runnable on a retag.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release for $TAG already exists; leaving it alone."
+          else
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --generate-notes \
+              --notes-start-tag "$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || echo '')"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
