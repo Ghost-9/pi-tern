@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1 — 2026-10-06
+
+- Fix CI: mailbox tests set `PI_TERN_FORCE=1` (the fast non-Tern guard from 1.0.0 otherwise trips on runners without a Tern pane). No runtime change.
+
 ## 1.0.0 — 2026-10-06
 
 Native mode, complete: launcher + loader hook, native rows surface, dock split, native composer.

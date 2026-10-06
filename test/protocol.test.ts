@@ -1,3 +1,4 @@
+process.env.PI_TERN_FORCE = "1"; // mailbox tests simulate the bridge without a Tern pane
 // Protocol and helper tests. No Tern required; runs anywhere with Node >= 22.6.
 import { test } from "node:test";
 import assert from "node:assert/strict";
