@@ -135,9 +135,14 @@ function describeProbe(): string {
 	if (probe.hello) {
 		const h = probe.hello;
 		lines.push(
-			`hello: v=${h.v} term=${h.term} ver=${h.ver ?? "?"} apc=${h.apc} credits=${h.credits} cols=${h.cols ?? "?"} dark=${h.dark}`,
+			`hello: v=${h.v} term=${h.term} ver=${h.ver ?? "?"} apc=${h.apc} credits=${h.credits} cols=${h.cols ?? "?"} dark=${h.dark} reduce-motion=${h.reduceMotion === true ? "on" : "off"}`,
 			`kinds (${h.kinds.length}): ${h.kinds.join(", ")}`,
 			`features: ${h.features.join(", ")}`,
+			// Stated plainly, because "confirmed" reads equally true of a fresh and a stale
+			// vocabulary, and a stale one silently gates the wrong nodes.
+			...(h.stale
+				? ["note: this hello is STALE — it predates the running daemon. A session resume re-probes; if you see this, the re-probe did not answer."]
+				: []),
 		);
 	}
 	if (probe.status === "absent") lines.push("note: DA1 answered before any tsp;r — this terminal does not speak TSP.");
@@ -206,6 +211,22 @@ function registerProbe(ctx: { mode?: string; ui?: Pick<ExtensionUIContext, "onTe
 	});
 
 	// Send the hello + DA1 sentinel after the first frames have settled.
+	sendProbe();
+	probeDeadline = setTimeout(() => {
+		if (probe.status === "pending") probe.status = "timeout";
+	}, 5000);
+}
+
+/**
+ * Ask Tern for its vocabulary: `hello` + the DA1 sentinel, which Tern answers *before* the DA1
+ * reply — so seeing DA1 without a hello is the signature of a terminal that does not speak TSP.
+ *
+ * Split out of `registerProbe` so a re-probe reuses the same protocol rather than a second copy of
+ * it drifting apart.
+ */
+function sendProbe(): void {
+	// Let the frames just written settle, so the reply cannot be read as input that was already
+	// queued.
 	setTimeout(() => {
 		try {
 			process.stdout.write(encodeHello("pi", PI_TERN_VERSION));
@@ -213,8 +234,35 @@ function registerProbe(ctx: { mode?: string; ui?: Pick<ExtensionUIContext, "onTe
 			/* stdout may be gone */
 		}
 	}, 1200);
+}
+
+/**
+ * Re-ask for the vocabulary without re-attaching the input listener, which stays live for the life
+ * of the session.
+ *
+ * Why this exists: Tern 0.5.2 fixed the daemon lag — *"the session daemon switches to the new build
+ * as the first window attaches, with your programs still running"*. So after an update, the daemon is
+ * new but a session that has been open since before it is still holding the vocabulary it saw at
+ * `session_start`. That looks exactly like the old daemon-lag bug, and it is not one: the difference
+ * is that this is ours to fix.
+ *
+ * A previous hello is marked `stale` rather than discarded. A failed re-probe should not cost the
+ * capabilities we already know about, and the flag keeps the reported status honest.
+ */
+function reprobe(): void {
+	if (!readTernEnv().inTern || process.env.PI_TERN_PROBE === "0" || insideMultiplexer()) return;
+	if (probe.hello) probe.hello.stale = true;
+	probe.status = "pending";
+	probe.probedAt = Date.now();
+	if (probeDeadline) clearTimeout(probeDeadline);
+	sendProbe();
 	probeDeadline = setTimeout(() => {
-		if (probe.status === "pending") probe.status = "timeout";
+		// Keep what we had if the re-probe goes unanswered: the old vocabulary is still the best
+		// information available, and reporting a confirmed session as a timeout would be a lie.
+		if (probe.status === "pending") {
+			probe.status = probe.hello ? "confirmed" : "timeout";
+			if (probe.hello) probe.hello.stale = true;
+		}
 	}, 5000);
 }
 
@@ -426,6 +474,9 @@ function refreshBridge(ctx: ExtensionContext): void {
 			})),
 			chart: lastChart,
 			toolResults,
+			// Tern advertises reduce-motion in the hello and has honoured it everywhere since
+			// 0.5.2. Copy it into the dashboard so the panels can stop animating on a 3 s timer.
+			reduceMotion: probe.hello?.reduceMotion === true,
 		};
 		const fingerprint = JSON.stringify(data);
 		if (fingerprint === lastDashboardFingerprint) return;
@@ -803,8 +854,17 @@ async function captureWithRetry(
 	throw new Error(`capture failed: ${message}`);
 }
 export default function piTern(pi: ExtensionAPI) {
-	pi.on("session_start", async (_event, ctx) => {
-		registerProbe(ctx);
+	pi.on("session_start", async (event, ctx) => {
+		// `session_start` is pi's only session-lifecycle event, and it carries the reason:
+		// "startup" | "reload" | "new" | "resume" | "fork". A resume or a fork is exactly when this
+		// extension's module state - including the TSP vocabulary - belongs to a different session.
+		//
+		// Tern 0.5.2 switches the daemon to the new build as the first window attaches, so a session
+		// resumed after a Tern update is otherwise left holding the vocabulary it saw earlier. That
+		// reads exactly like the old daemon-lag bug and is not one: this part is ours.
+		const resumed = event?.reason === "resume" || event?.reason === "fork";
+		if (resumed) reprobe();
+		else registerProbe(ctx);
 		updateTitle(ctx);
 		refreshBridge(ctx);
 		// A native surface is displayed only in an agent block. Check before anything else, and when it

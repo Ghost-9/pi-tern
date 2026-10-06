@@ -58,7 +58,7 @@ The extension itself never writes TSP frames, so pi's renderer is not disturbed 
 
 ## Requirements
 
-- **Tern 0.5.0 or newer**, running (closed beta; a Stencil account comes from Tern itself). Developed and gated against **0.5.1**; 0.4.5 was the floor when the extension first shipped and is no longer what the tests run against.
+- **Tern 0.5.1 or newer**, running (closed beta; a Stencil account comes from Tern itself). Verified against **0.5.2** (`21a6de4`): the TSP vocabulary is byte-identical to 0.5.1 — same 44 node kinds in the same order, same 10 features, same `hello` fields — and the plugin window API is byte-identical (`tern.d.luau`, md5 `d39773c7…`). 0.4.5 was the floor when the extension first shipped.
 - pi 1.0.x
 - macOS or Linux. **Not functional inside tmux, screen or zellij:** those swallow APC strings, so the TSP handshake never completes and the pane-only features stay inert. The CLI-backed tools (`tern_chart`, `tern_worktree`, `tern_pr`) do not depend on the handshake and keep working.
 
@@ -234,10 +234,14 @@ Three channels, kept separate:
   stock pi rather than failing.
 - **Tern's agent layer is omp-keyed.** `cx.agents:transcript` reads the `omp.session` surface and returns `{}` for non-omp programs, so the Agent chip, Carly transcripts and prompt injection are unavailable. Tern 0.5.1 adds Hermes as a second native agent that *speaks omp's chat vocabulary*, which suggests this is an implementable contract rather than an omp-only privilege — but the read-side predicate for a third agent is unconfirmed, and impersonating `omp.session` to reach it is deliberately not attempted.
 - **Tern file blocks are not panes.** `tern capture` cannot read a file block back (`no such pane in this session daemon`), so diagram rendering is verified visually.
-- **A running Tern daemon is not the same as the new Tern binary.** The session daemon survives an app
-  update by design, so after updating Tern, `tern --version` can report the new build while the live
-  daemon still answers with the old one (observed: binary 0.5.1, hello `ver: "0.5.0"`). Restart the
-  daemon or the app before attributing any behaviour change to a version bump.
+- **A session open across a Tern update keeps a stale TSP vocabulary.** The daemon used to lag the
+  binary, which made this look like a platform problem; **Tern 0.5.2 fixed that** — *"the session
+  daemon switches to the new build as the first window attaches, with your programs still running"* —
+  and verified here: after one window attach a new pane's hello reported `ver: "0.5.2"` while a
+  long-running session carried on. So the remedy is **attach any window**, not restart the daemon.
+  What remains is ours: the probe runs at session start, so a session that spans an update acts on the
+  vocabulary it saw then. `/tern diagnose` reports the version it probed with; re-probe after attaching
+  a new window.
 - **Native surfaces are agent-block-only** (see above). In a shell block the pane is blank and nothing
   reports an error; 1.1.5 detects it and falls back, earlier versions did not.
 - **Browser capture needs a rendered picture-in-picture.** Tern answers `capture: a 0×0 px image is out of range` while the PiP is not visible. `tern_chart` sidesteps this for SVG charts by rasterizing locally (`rsvg-convert` → `inkscape` → `qlmanage` → browser); for HTML/JS pages the browser is still the only renderer.

@@ -201,10 +201,25 @@ local function register()
 	if ok then tern.log.warn("pi-tern-tools: bound ctrl+shift+f11") end
 end
 
+-- Honour Tern's reduce-motion. A 3 s auto-refresh is animation whether or not it is called that,
+-- and Tern has applied this flag everywhere since 0.5.2 - so a panel that repaints on a timer is
+-- the one surface in the window that does not respect it. Under reduce-motion the panel opens and
+-- refreshes on demand (the chord and the Refresh button still work) instead of on a timer.
+local function motion_reduced()
+	local data = read_dashboard()
+	return type(data) == "table" and data.reduceMotion == true
+end
+
 local function arm()
 	if state.armed then return end
 	state.armed = true
 	local function tick(cx)
+		if motion_reduced() then
+			-- Stop the loop rather than spinning quietly: the flag can change at any time, and the
+			-- chord re-arms it.
+			tern.log.warn("pi-tern-tools: auto-refresh off (reduce-motion)")
+			return
+		end
 		if cx then pcall(refresh, cx) end
 		tern.timer(REFRESH_MS, tick)
 	end

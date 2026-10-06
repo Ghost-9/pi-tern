@@ -14,6 +14,8 @@ import { test } from "node:test";
 import { detectRasterizer, niceMax, renderChartSvg } from "../lib/figure.ts";
 import { buildManifest, renderManifest, type Manifest } from "../lib/manifest.ts";
 import { prVerdict, safeSelector, type PrSummary } from "../lib/pr.ts";
+import { BRIDGE_WINDOW_LUAU } from "../lib/bridge-plugin.ts";
+import { TOOLS_WINDOW_LUAU } from "../lib/tools-plugin.ts";
 import { bridgeBuildId, writeDashboardJson } from "../lib/bridge.ts";
 import { classifyToolResult, languageFor, mergeToolResults, pathFromToolInput } from "../lib/toolresults.ts";
 import { defaultWorktreePath } from "../lib/worktree.ts";
@@ -396,4 +398,70 @@ test("the dashboard payload carries tool results to the panel plugin", () => {
 		if (previousHome === undefined) delete process.env.HOME;
 		else process.env.HOME = previousHome;
 	}
+});
+
+test("reduce-motion reaches the panels, and both actually honour it", () => {
+	// The panels repaint on a 3 s timer, which is animation whatever it is called. Tern has applied
+	// reduce-motion everywhere since 0.5.2, and pi-tern advertised the flag in the hello while
+	// ignoring it — making the dashboard the one surface in the window that did not respect it.
+	const dir = mkdtempSync(path.join(os.tmpdir(), "pi-tern-motion-"));
+	const previousHome = process.env.HOME;
+	process.env.HOME = dir;
+	try {
+		const base = { version: "1.1.11", model: "m", cwd: "/tmp", mirror: "off", browserTabs: [] };
+		// Use the path the writer returns rather than recomputing it: `scratchDir()` caches per HOME,
+		// so a second call can resolve differently from the one that just wrote.
+		const onPath = writeDashboardJson({ ...base, reduceMotion: true });
+		const on = JSON.parse(readFileSync(onPath, "utf8")) as { reduceMotion?: boolean };
+		assert.equal(on.reduceMotion, true, "the flag must reach dashboard.json, or the panels cannot see it");
+
+		// Absent and false both mean "do not reduce", so the default must be an explicit false
+		// rather than undefined the panels have to guess about.
+		const offPath = writeDashboardJson({ ...base });
+		const off = JSON.parse(readFileSync(offPath, "utf8")) as { reduceMotion?: boolean };
+		assert.equal(off.reduceMotion, false, "the default is an explicit false, not undefined");
+
+		for (const [name, lua] of [
+			["BRIDGE_WINDOW_LUAU", BRIDGE_WINDOW_LUAU],
+			["TOOLS_WINDOW_LUAU", TOOLS_WINDOW_LUAU],
+		] as const) {
+			assert.match(lua, /data\.reduceMotion == true/, `${name} must read the flag`);
+			assert.match(lua, /auto-refresh off \(reduce-motion\)/, `${name} must say it stopped, not just skip a tick`);
+			// The loop must actually stop: returning without re-arming is the whole behaviour, and a
+			// tick that skipped the work but kept the timer would still animate the timer itself.
+			const tick = /local function tick\(cx\)([\s\S]*?)end\n/.exec(lua)?.[1] ?? "";
+			const guardAt = tick.indexOf("motion_reduced()");
+			const returnAt = tick.indexOf("return", guardAt);
+			const rearmAt = tick.indexOf("tern.timer", guardAt);
+			assert.ok(guardAt !== -1, `${name} must check the flag inside the tick`);
+			assert.ok(rearmAt === -1 || returnAt < rearmAt, `${name} must return before re-arming the timer`);
+		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
+	}
+});
+
+test("a stale hello is marked, so 'confirmed' cannot quietly mean 'old'", () => {
+	// Tern 0.5.2 switched the daemon on the first window attach, so a session spanning an update
+	// keeps the vocabulary it saw at start. Without a marker that is indistinguishable from fresh.
+	const source = readFileSync(path.join(here, "..", "index.ts"), "utf8");
+	// The mark is set on the old hello *before* re-asking, and re-probe must not discard it.
+	assert.match(source, /if \(probe\.hello\) probe\.hello\.stale = true;/, "reprobe marks the previous hello stale");
+	assert.match(source, /reason === "resume" \|\| event\?\.reason === "fork"/, "a resume or fork re-probes");
+	assert.match(source, /session_start/, "session_start is pi's only session lifecycle event");
+	// And the type must document the flag, so the next reader knows Tern did not send it.
+	assert.match(
+		readFileSync(path.join(here, "..", "lib", "tsp.ts"), "utf8"),
+		/stale\?: boolean;/,
+		"TspHello must document the field pi-tern adds",
+	);
+	// A re-probe that goes unanswered must keep the old vocabulary rather than report a timeout,
+	// which would be a lie about a session that demonstrably has one.
+	assert.match(
+		source,
+		/probe\.status = probe\.hello \? "confirmed" : "timeout"/,
+		"a failed re-probe falls back to the hello we already had",
+	);
 });

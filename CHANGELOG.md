@@ -1,5 +1,64 @@
 # Changelog
 
+## 1.1.11 - 2026-10-07
+
+**Tern 0.5.2 (`21a6de4`) landed, and three things follow from it.**
+
+Audited rather than assumed. The 0.5.2 changelog was extracted from the installed binary (the bundle
+ships none) and every surface pi-tern depends on was diffed against 0.5.1:
+
+| Surface | 0.5.1 | 0.5.2 |
+| --- | --- | --- |
+| TSP node kinds | 44 | **44, same order** |
+| TSP features | 10 | **10** |
+| `hello` top-level fields | 14 | **14** |
+| plugin window API (`tern.d.luau`, 1787 lines) | `d39773c7…` | **`d39773c7…`** |
+| CLI verbs we call (19) | all | **all** |
+| data plane, both window entries, gate, manifest | green | **green** |
+
+**Nothing breaks.** The `cols`/`cell` differences in a fresh hello are the probe pane's size, not a
+protocol change — worth not misreading.
+
+### 1. `reduce-motion` is now honoured everywhere, so pi-tern honours it too
+
+Tern applies this flag app-wide as of 0.5.2. pi-tern advertised `reduce-motion` in the hello and then
+**ignored it** — `lib/tsp.ts` typed the field and nothing read it — which made the two panels the only
+surfaces in the window that animated regardless of the setting. Both repaint on a **3 s timer**, which
+is animation whatever it is called.
+
+The extension copies the flag out of the hello into `dashboard.json`; both window entries read it and
+**stop their refresh loop**, logging `auto-refresh off (reduce-motion)`. They return without re-arming
+rather than polling and doing nothing, because a live timer that skips its work still animates.
+
+Verified live on 0.5.2: with the flag set, both plugins logged the stop; with it unset, the log count
+did not move — i.e. the timers kept running.
+
+### 2. A session spanning a Tern update no longer acts on a stale vocabulary
+
+0.5.2 fixed the daemon lag the vault recorded as permanent — *"the session daemon switches to the new
+build as the first window attaches, with your programs still running"* — verified: after one window
+attach, a new pane's hello reported `0.5.2` while a long-running session carried on. **The remedy is
+now "attach any window", not "restart the daemon".**
+
+But that leaves our half of it. The probe runs at session start, so a session resumed after an update
+still holds the vocabulary it saw then — which reads exactly like the old daemon lag and is not one.
+`session_start` carries `reason: "startup" | "reload" | "new" | "resume" | "fork"`, so a resume or fork
+now re-asks. **Strict types caught this one for me:** the first attempt used a `session_resume` event
+that pi does not have, and `tsc` rejected it against the real `ExtensionAPI` union.
+
+The old hello is marked `stale` rather than discarded — a failed re-probe should not cost capabilities
+we already know about — and a re-probe that goes unanswered falls back to `confirmed` rather than
+reporting a `timeout` for a session that demonstrably has one. `/tern diagnose` prints
+`reduce-motion=on|off` and an explicit `STALE` note.
+
+### 3. README
+
+The daemon-lag limitation described a hazard 0.5.2 removed and gave a remedy that is no longer needed.
+Replaced with the measured behaviour, and the tested-against line now says 0.5.2.
+
+Gate: **136/136 unit - 10/10 gate steps - 7/7 compat - 19/19 live - strict typecheck clean**, and the
+same 136 from the packed tarball.
+
 ## 1.1.10 - 2026-10-06
 
 **Verify the artifact, not the repository.**

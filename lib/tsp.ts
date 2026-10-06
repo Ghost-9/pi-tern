@@ -18,6 +18,14 @@ export interface TspHello {
 	cell?: { w: number; h: number };
 	dark?: boolean;
 	reduceMotion?: boolean;
+	/**
+	 * Set by pi-tern, not by Tern: true once this hello predates the running daemon.
+	 *
+	 * Tern 0.5.2 switched the daemon to the new build on the first window attach, so a session open
+	 * across an update keeps the vocabulary it saw at `session_start` until it re-probes. Without a
+	 * marker, "confirmed" would look equally true of a fresh and a stale vocabulary.
+	 */
+	stale?: boolean;
 }
 
 export interface TspMessage {

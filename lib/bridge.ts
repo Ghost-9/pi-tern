@@ -27,6 +27,14 @@ export interface DashboardData {
 	/** A native bar chart (tern.ui.bars takes {label, value} pairs). */
 	chart?: { title?: string; series: Array<{ label: string; value: number }> };
 	/**
+	 * Tern's `reduce-motion` setting, copied out of the TSP hello.
+	 *
+	 * Both panels auto-refresh on a 3 s timer, which is animation whether or not it is called that.
+	 * Tern honours this flag everywhere since 0.5.2; pi-tern advertised it in the hello and then
+	 * ignored it, which made the dashboard the one surface in the window that did not.
+	 */
+	reduceMotion?: boolean;
+	/**
 	 * Tool results from this session, so the panel can render them as native widgets.
 	 *
 	 * These were previously invisible in Tern: a `git diff` reached the reader as `+`/`-` text in a
@@ -142,6 +150,7 @@ export function writeDashboardJson(data: DashboardData): string {
 		chart: data.chart,
 		// The tool-results panel plugin reads this; without it the panel always says "none yet".
 		toolResults: data.toolResults ?? [],
+		reduceMotion: data.reduceMotion === true,
 		markdown: buildPanelMarkdown(data),
 		updatedAt: (data.now ?? new Date()).toISOString(),
 	};

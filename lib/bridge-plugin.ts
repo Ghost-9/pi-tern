@@ -304,10 +304,25 @@ local function register_links()
 	if not ok then tern.log.warn("pi-bridge: link route registration failed", tostring(err)) end
 end
 
+-- Honour Tern's reduce-motion. This dashboard repaints every 3 s, which is animation whether or not
+-- it is called that, and Tern has applied this flag everywhere since 0.5.2. Under reduce-motion it
+-- stops the timer and refreshes on demand instead; ctrl+shift+f10 still reopens and refreshes it.
+--
+-- The dashboard is written by the extension, which copies the flag out of the TSP hello, so the
+-- setting follows the terminal rather than being guessed at.
+local function motion_reduced()
+	local data = read_dashboard()
+	return type(data) == "table" and data.reduceMotion == true
+end
+
 local function arm()
 	if state.armed then return end
 	state.armed = true
 	local function tick(cx)
+		if motion_reduced() then
+			tern.log.warn("pi-bridge: auto-refresh off (reduce-motion)")
+			return
+		end
 		if cx then pcall(refresh, cx) end
 		tern.timer(REFRESH_MS, tick)
 	end
