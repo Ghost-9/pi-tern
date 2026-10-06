@@ -38,6 +38,10 @@ jobs:
       # names an export the module does not have, in either direction.
       - name: Native declarations match the modules
         run: node scripts/check-native-types.mjs
+      # Text-only, and before anything imports lib/bridge-plugin.ts: a bare backtick in the Luau
+      # breaks the TypeScript module itself, so a test inside it could never run to report it.
+      - name: Generated Luau source is intact
+        run: node scripts/check-luau-source.mjs
 
   compat:
     runs-on: ubuntu-latest

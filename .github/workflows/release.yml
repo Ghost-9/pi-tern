@@ -35,6 +35,8 @@ jobs:
         run: npm run lint
       - name: Native declarations match the modules
         run: node scripts/check-native-types.mjs
+      - name: Generated Luau source is intact
+        run: node scripts/check-luau-source.mjs
       - name: Compatibility matrix (static tier)
         run: node native/compat.mjs --static
       - name: Publish to npm
