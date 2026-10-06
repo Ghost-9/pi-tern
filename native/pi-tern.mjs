@@ -10,6 +10,19 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { encodeHello, extractMessages, isHelloReply } from "./tsp.mjs";
 
+/**
+ * Report a launcher failure on stderr and exit non-zero.
+ *
+ * This exists because the launcher used to spawn a bare "pi" with no `error` handler: on a machine
+ * with no pi on PATH the spawn failed, the exit event never carried the failure, and the launcher
+ * exited 0 having printed nothing. A component whose entire job is to be invisible must still be
+ * honest when it cannot start anything at all.
+ */
+function fail(message) {
+	process.stderr.write(`pi-tern: ${message}\n`);
+	process.exit(1);
+}
+
 const installRoot = process.env.PI_MANAGED_INSTALL_ROOT || path.join(process.env.HOME ?? "", ".pi", "agent", "install");
 
 function resolveRelease() {
@@ -22,18 +35,43 @@ function resolveRelease() {
 	}
 }
 
+/**
+ * Find a stock pi to fall back to. PATH first (a developer's managed install is what this is
+ * really for), then node_modules/.bin, because `@earendil-works/pi-coding-agent` is a
+ * devDependency so the stock binary exists there in CI, where nothing is globally installed.
+ */
+function findStockPi() {
+	const explicit = process.env.PI_TERN_STOCK;
+	if (explicit) return explicit;
+	for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+		if (!dir) continue;
+		const candidate = path.join(dir, "pi");
+		if (existsSync(candidate)) return candidate;
+	}
+	const local = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "node_modules", ".bin", "pi");
+	return existsSync(local) ? local : null;
+}
+
 function runStock(args) {
 	// Recursion guard: if something aliased `pi` to this launcher, run the managed bundle directly.
 	if (process.env.PI_TERN_LAUNCHED === "1") {
 		const release = resolveRelease();
 		if (release && existsSync(path.join(path.dirname(release.entry), "bundle", "cli.js"))) {
 			const child = spawn(process.execPath, [path.join(path.dirname(release.entry), "bundle", "cli.js"), ...args], { stdio: "inherit" });
-			child.on("exit", (code, signal) => (signal ? process.kill(process.pid, signal) : process.exit(code ?? 0)));
+			child.on("error", (error) => fail(`could not run the managed pi bundle: ${error.message}`));
+			child.on("exit", (code, signal) => {
+				if (signal) process.kill(process.pid, signal);
+				else process.exit(code ?? 0);
+			});
 			return;
 		}
 	}
-	const stock = process.env.PI_TERN_STOCK || "pi";
+	const stock = findStockPi();
+	if (!stock) {
+		fail("no stock pi found, on PATH or in node_modules/.bin. Install pi, or set PI_TERN_STOCK to its path.");
+	}
 	const child = spawn(stock, args, { stdio: "inherit", env: { ...process.env, PI_TERN_LAUNCHED: "1" } });
+	child.on("error", (error) => fail(`could not run stock pi (${stock}): ${error.message}`));
 	child.on("exit", (code, signal) => {
 		if (signal) process.kill(process.pid, signal);
 		else process.exit(code ?? 0);

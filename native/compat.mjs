@@ -25,6 +25,27 @@ const results = [];
 const record = "/tmp/pi-tern-compat-record.jsonl";
 const TSP_PREFIX = "\x1b_tsp;";
 
+/**
+ * Find the real pi. PATH first, because a developer's managed install is what this matrix is about;
+ * then node_modules/.bin, because `@earendil-works/pi-coding-agent` is a devDependency so the
+ * stock binary is available in CI even where nothing is globally installed.
+ */
+function resolvePi() {
+	const fromPath = spawnSync("sh", ["-c", "command -v pi"], { encoding: "utf8" });
+	const found = fromPath.stdout.trim();
+	if (found) return found;
+	const local = path.join(root, "node_modules", ".bin", "pi");
+	return existsSync(local) ? local : null;
+}
+
+const PI = resolvePi();
+if (!PI) {
+	console.error("FATAL: no `pi` binary found, on PATH or in node_modules/.bin.");
+	console.error("pi-tern's compat matrix compares the launcher against the real stock pi.");
+	console.error("Install pi, or run `npm install` so the devDependency provides it.");
+	process.exit(1);
+}
+
 function run(command, args, { input, timeoutMs = 90000 } = {}) {
 	return new Promise((resolve) => {
 		const child = spawn(command, args, {
@@ -55,23 +76,22 @@ const STATIC_ONLY = process.argv.includes("--static");
 const label = STATIC_ONLY ? "static tier" : "full tier";
 
 rmSync(record, { force: true });
-console.log(`compatibility matrix (${label})\n`);
+console.log(`compatibility matrix (${label})\nusing pi: ${PI}\n`);
 
-const version = spawnSync("pi", ["--version"], { encoding: "utf8" });
+const version = spawnSync(PI, ["--version"], { encoding: "utf8" });
 if (version.error || version.status !== 0) {
-	// A loud, specific failure beats a cascade of confusing ones: without `pi` on PATH none of
+	// A loud, specific failure beats a cascade of confusing ones: without a working pi none of
 	// the comparisons below mean anything.
 	console.error(`FATAL: could not run \`pi --version\`: ${version.error?.message ?? `exit ${version.status}`}`);
-	console.error("pi-tern's compat matrix runs the real managed pi. Install pi, or run the test suite instead.");
 	process.exit(1);
 }
 check("pi --version", /1\.\d+\.\d+/.test(version.stdout), version.stdout.trim());
 
 if (!STATIC_ONLY) {
-	const print = await run("pi", ["--no-session", "-p", "reply with exactly: OK"]);
+	const print = await run(PI, ["--no-session", "-p", "reply with exactly: OK"]);
 	check("pi -p (print)", print.code === 0 && print.stdout.includes("OK"), print.stdout.trim() || print.stderr.trim());
 
-	const json = await run("pi", ["--no-session", "--mode", "json", "-p", "reply with exactly: OK"]);
+	const json = await run(PI, ["--no-session", "--mode", "json", "-p", "reply with exactly: OK"]);
 	check("pi --mode json", json.code === 0 && json.stdout.includes('"'), `${json.stdout.slice(0, 80)} ${json.stderr.slice(0, 80)}`);
 }
 
@@ -84,7 +104,7 @@ if (!STATIC_ONLY) {
 // pi RPC uses {id, type}, not JSON-RPC {id, method} — the method shape returns
 // "Unknown command: undefined" and never answers.
 const rpcInput = `${JSON.stringify({ id: 1, type: "get_commands" })}\n`;
-const rpc = await run("pi", ["--no-session", "--mode", "rpc"], { input: rpcInput, timeoutMs: 12000 });
+const rpc = await run(PI, ["--no-session", "--mode", "rpc"], { input: rpcInput, timeoutMs: 12000 });
 const launcherRpc = await run("node", [launcher, "--no-session", "--mode", "rpc"], { input: rpcInput, timeoutMs: 12000 });
 
 /** Keep the JSON line *shapes*; drop the random ids so two runs can be compared. */
