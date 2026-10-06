@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — v1.0.0 M1
+
+- **Native mode (rows fallback)**: `native/` launcher + probe, loader hook patching
+  `ProcessTerminal.write`, ANSI grid to TSP `rows` frames, stock-pi fallback, 100 ms frame
+  coalescing. Verified inside Tern: 619 frames, `[Skills] …` content, **0 ANSI writes**; fallback
+  outside Tern returns stock 1.0.4. Semantic dock/composer/transcript nodes remain M2/M3.
+- Docs: `native/README.md`, `docs/NATIVE-M1.md` (metrics + charts); native unit tests (5).
+
 ## 0.9.1 — 2026-10-06
 
 - Docs correction (no code changes): the loader hook reaches real pi-tui only through the **unbundled**

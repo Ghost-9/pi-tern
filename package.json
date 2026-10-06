@@ -34,7 +34,8 @@
 		"LICENSE",
 		"CHANGELOG.md",
 		"scripts",
-		"spikes"
+		"spikes",
+		"native"
 	],
 	"pi": {
 		"extensions": [
@@ -45,7 +46,7 @@
 		"access": "public"
 	},
 	"scripts": {
-		"test": "node --experimental-strip-types --test test/protocol.test.ts",
+		"test": "node --experimental-strip-types --test test/protocol.test.ts test/native.test.ts",
 		"test:live": "node --experimental-strip-types --test test/live.test.ts",
 		"typecheck": "tsc --noEmit",
 		"lint": "oxlint index.ts lib test",
