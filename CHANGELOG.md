@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.1.9 - 2026-10-06
+
+**The npm 1.1.8 tarball was a partial snapshot, and this is the honest re-release.**
+
+Releasing 1.1.8 surfaced two bugs in the release workflow that had been invisible while it only ever
+published on a clean tag.
+
+1. **The run tagged `v1.1.0` published `1.1.8`.** `package.json` had moved on while the tag had not,
+   and npm has no way to know — so a version reached npm that no tag described. Nothing errored.
+   `release.yml` now fails immediately when `${GITHUB_REF_NAME#v}` disagrees with `package.json`.
+2. **A duplicate publish blocked the Release step.** npm rejects re-publishing an existing version,
+   and that non-zero exit stopped the job before `gh release create` — so a retag left a version on
+   npm with no Release page, which is the exact gap issue #3 was closed for. Publish now tolerates it
+   and a separate step verifies the version is actually on npm, so a genuine publish failure still
+   fails the run while a re-run still gets its page.
+
+**Why 1.1.8 could not simply be left alone.** `npm pack pi-tern@1.1.8` and unpacking it shows the
+published tarball is missing `lib/handshake.mjs`, `lib/toolresults.ts`, `lib/tools-plugin.ts`,
+`scripts/render-proof.mjs` and `scripts/check-luau-source.mjs`, and its `test` script names eight
+test files rather than nine. It is a snapshot from partway through the work, and a user installing it
+would get a package whose stated version promises fixes it does not contain. Re-releasing as 1.1.9
+is the only honest remedy.
+
+Everything in the 1.1.8 changelog entries below applies unchanged; this release is the complete set.
+
+Gate: **130/130 unit - 9/9 gate steps - 7/7 compat - 19/19 live - strict typecheck clean.**
+
 ## 1.1.8 - 2026-10-06
 
 **The gate stopped being able to lie, and it had been lying about three things.**

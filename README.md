@@ -255,6 +255,9 @@ Three channels, kept separate:
   a `tern capture` process every 500 ms, and falls back to backing-off polls if events do not flow.
   The reply reports `via: "events"` or `via: "poll"`, so the fallback is visible.
 - **Mailbox latency** is one plugin poll (~0.25–0.75 s per call); DB access is read-only unless `exec` is explicitly allowed; `agent.db`-style stores hold credentials, so pass explicit paths and never select secret columns.
+- **npm 1.1.8 was a partial snapshot and is superseded.** A release-workflow bug published it from a
+  mid-work commit, so the tarball is missing several of this release's files. **Install 1.1.9 or
+  later.** The bug is fixed: a tag whose version disagrees with `package.json` now fails the release.
 - **Notebook execution is not exposed** by Tern's plugin API; `tern_notebook` only reads open notebook blocks.
 
 ## Security
