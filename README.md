@@ -241,6 +241,13 @@ Three channels, kept separate:
   reports an error; 1.1.5 detects it and falls back, earlier versions did not.
 - **Browser capture needs a rendered picture-in-picture.** Tern answers `capture: a 0×0 px image is out of range` while the PiP is not visible. `tern_chart` sidesteps this for SVG charts by rasterizing locally (`rsvg-convert` → `inkscape` → `qlmanage` → browser); for HTML/JS pages the browser is still the only renderer.
 - **Inline figures in the conversation are opt-in and unconfirmed.** `PI_TERN_INLINE_IMAGES=1` only *attempts* it; every rejection lands in `nativeState().lastError`. The mechanism is settled: there is **no `blob` frame op** — Tern answers `unknown op blob` for both `["blob",id,mime,data]` and `["blob",mime,data]`, and the blob store is a plugin-VM API (`blob(self, bytes, mime)`), not part of the frame dialect. pi-tern therefore sends the bytes **inline in the `image` node**, which Tern accepts. The accepted encoding is not the same as *seen rendering*: use the file block or `png: true` for anything that must work today. Full table in [`docs/TSP-ENCODINGS.md`](docs/TSP-ENCODINGS.md).
+- **The TSP handshake is a race and is retried.** Three attempts with backoff, because on identical
+  panes one probe received Tern's 633-byte reply immediately while another received nothing across
+  six retries over 2.4 s. A single 700 ms attempt fails nondeterministically, which is why native
+  mode used to engage only sometimes. `/tern diagnose` now reports `probeFailure` — `timeout` (a
+  lost race), `no-hello-reply` (the terminal answered the DA1 sentinel but does not speak TSP), or
+  `unexpected-reply:…` — instead of failing silently. Tune with `PI_TERN_PROBE_ATTEMPTS` and
+  `PI_TERN_PROBE_TIMEOUT_MS`.
 - **`tern_ctl` needs a control endpoint.** Run `/tern control` (headless by default) or launch Tern with `--control EP` / set `TERN_WINDOW_SOCKET`.
 - **The pi-bridge canvas is experimental.** The plugin loads and binds its chord (verified in Tern's log and `plugin list`), but the Luau canvas rendering itself has not been visually verified from CI.
 - **Mailbox latency** is one plugin poll (~0.25–0.75 s per call); DB access is read-only unless `exec` is explicitly allowed; `agent.db`-style stores hold credentials, so pass explicit paths and never select secret columns.

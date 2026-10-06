@@ -33,6 +33,7 @@ UNIT_TESTS=(
 	test/bridge-luau.test.ts
 	test/agent-setup.test.ts
 	test/version.test.ts
+	test/handshake.test.ts
 	test/native-sink.test.ts
 )
 

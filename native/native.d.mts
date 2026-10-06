@@ -145,6 +145,74 @@ export function splitComposer(lines: string[]): ComposerParts | null;
  */
 export declare function nodeOf(op: FrameOp): FrameNode | undefined;
 
+// native/handshake.mjs — the retry loop and its failure reasons.
+/** Whether a handshake is even possible here, and why not when it is not. */
+export declare function handshakePossible(env?: Record<string, string | undefined>): {
+	ok: boolean;
+	reason: string | null;
+};
+export type ProbeEnv = Record<string, string | undefined>;
+export interface ProbeResult {
+	hello: Record<string, unknown> | null;
+	/**
+	 * Why there is no hello. `timeout` (nothing arrived — a race), `no-hello-reply` (the terminal
+	 * answered our DA1 sentinel but does not speak TSP), `unexpected-reply:…` (junk that cannot
+	 * become a frame), `no-raw-mode:…`, `not-interactive`, `multiplexer`, `disabled`. Null on success.
+	 */
+	reason: string | null;
+	/** Attempts actually made, which is fewer than the budget when an unretryable reason stopped it. */
+	attempts: number;
+}
+/** The named reasons, so a caller can compare rather than match on a string prefix. */
+export declare const ProbeReason: {
+	timeout: string;
+	unexpectedReply: string;
+	noHelloReply: string;
+	noRawMode: string;
+	notInteractive: string;
+	disabled: string;
+	multiplexer: string;
+};
+/**
+ * The only stream surface the handshake needs. Deliberately minimal rather than NodeJS.ReadStream:
+ * the launcher passes the real streams, and a test passes fakes, and neither should have to
+ * implement 80 unrelated methods to satisfy a type.
+ */
+export interface ProbeInput {
+	isTTY?: boolean;
+	isRaw?: boolean;
+	setRawMode?(value: boolean): void;
+	on(event: string, handler: (chunk: Buffer | string) => void): void;
+	off(event: string, handler: (chunk: Buffer | string) => void): void;
+	resume?(): void;
+	pause?(): void;
+}
+export interface ProbeOutput {
+	write(chunk: string): unknown;
+}
+export interface ProbeOptions {
+	input?: ProbeInput;
+	output?: ProbeOutput;
+	attempts?: number;
+	timeoutMs?: number;
+	backoffMs?: number;
+	env?: ProbeEnv;
+	onAttempt?: (attempt: number, result: { hello: unknown; reason: string | null }) => void;
+}
+export declare function probeOnce(options?: {
+	input?: ProbeInput;
+	output?: ProbeOutput;
+	timeoutMs?: number;
+}): Promise<{ hello: Record<string, unknown> | null; reason: string | null }>;
+/**
+ * Retry the handshake, because it is a race: measured on identical panes, one probe got Tern's
+ * reply immediately while another got nothing across six retries over 2.4 s.
+ */
+export declare function probe(options?: ProbeOptions): Promise<ProbeResult>;
+/** Record why the handshake failed, so `/tern diagnose` can say more than "it did not engage". */
+export declare function recordProbeFailure(stateFile: string, reason: string, attempts: number): void;
+export declare function clearProbeFailure(stateFile: string): void;
+
 export const TSP_VERSION: number;
 export const TSP_PREFIX: string;
 export const ST: string;

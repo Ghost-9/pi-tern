@@ -21,7 +21,7 @@ async function actualExports(file) {
 	return new Set(Object.keys(mod));
 }
 
-const MODULES = ["backend", "ansi", "layout", "tsp"];
+const MODULES = ["backend", "ansi", "layout", "tsp", "handshake"];
 
 // The per-module `.d.mts` files re-export from `native.d.mts`, so the declarations to compare live
 // in one place. Read that one file, then check each module against its share of it. Reading the

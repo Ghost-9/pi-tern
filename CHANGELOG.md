@@ -53,6 +53,53 @@ skip into a failure, for gating a release where "checked nothing" must not read 
 
 Gate: **82/82 unit - 7/7 compat - 19/19 live - strict typecheck clean.**
 
+## 1.1.8 - 2026-10-06 (handshake)
+
+**The handshake is a race, and it was being given one chance.**
+
+Measured on identical panes: `scripts/hello-probe.mjs` received Tern's 633-byte reply immediately;
+`scripts/tsp-render.mjs` received **nothing across six retries over 2.4 s**. The launcher made a
+single 700 ms attempt and fell back to stock pi *silently*, so the only symptom was that native mode
+sometimes did not engage.
+
+- **`native/handshake.mjs`** now owns the handshake. It is protocol logic rather than launcher
+  bootstrap, which is what makes it testable: the launcher is a top-level script whose job is to be
+  invisible outside Tern, so driving it from a test means either spawning pi or spawning stock pi,
+  and neither is observable without side effects. Here the seam is a function.
+- **Retries, three attempts with linear backoff**, the first success winning.
+  `PI_TERN_PROBE_ATTEMPTS` and `PI_TERN_PROBE_TIMEOUT_MS` override the defaults so the race can be
+  reproduced deterministically instead of waiting out real timeouts.
+- **The failure is recorded, not discarded.** `state.json` gains `probeFailure`, cleared on the next
+  success, and `/tern diagnose` reports it. `timeout` (a race) and `no-hello-reply` (the terminal
+  answered our DA1 sentinel but does not speak TSP) need different fixes, so they are named
+  differently.
+- **Unretryable reasons stop the loop.** A terminal that does not speak TSP will not start speaking it
+  three attempts later, and retrying only overwrites a precise diagnosis with a generic timeout.
+- `PI_TERN_NATIVE_BLOCK=force` still skips the handshake, and says so (`forced: true`) rather than
+  pretending a reply arrived.
+
+**Two bugs found by the tests written for this, both in the new code:**
+
+1. The "is this junk?" check originally fired when the buffer held no *complete* message. A reply
+   split across two reads is incomplete on the first read, so a perfectly good 633-byte reply would
+   have been rejected — reintroducing the very failure the retry loop exists to prevent. The check is
+   now "does this start with a TSP frame at all", not "is a message complete".
+2. Breaking early on an unretryable reason reported `attempts: 3` when one had been made, which would
+   have told `diagnose` a race happened when none did.
+
+`test/handshake.test.ts` — **12 tests**, no Tern and no pty needed: first-attempt success, a late
+reply still winning, every attempt failing, a split reply reassembling, DA1-only being named
+separately from silence, raw mode set and restored, the multiplexer/`not-interactive` skips, the
+force path, and the record/clear cycle. It also asserts the listener is detached afterwards, since one
+left attached keeps reading pi's keystrokes.
+
+While writing it, a fixture with `"v": [1]` made `isHelloReply` look broken. It is not: the captured
+reply carries a scalar `"v":1`, while the hello we *send* carries `v: [1]`. The fixture now cites the
+captured bytes, because a test that encodes the wrong shape teaches the wrong thing.
+
+Gate: **110/110 unit - 8/8 gate steps - 7/7 compat - 19/19 live - strict typecheck clean.**
+
+
 ## 1.1.7 — 2026-10-06
 
 **The block notice is said once, and it now comes with the command that fixes it.**

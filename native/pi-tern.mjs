@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { encodeHello, extractMessages, isHelloReply } from "./tsp.mjs";
+import { clearProbeFailure, probe, recordProbeFailure } from "./handshake.mjs";
 
 /**
  * Report a launcher failure on stderr and exit non-zero.
@@ -178,7 +178,6 @@ async function askBlockKind(paneId, timeoutMs = KIND_TIMEOUT_MS) {
  * what the other already said.
  */
 function nonAgentBlockNotice(kind) {
-	const stateFile = path.join(path.dirname(mailboxDir()), "state.json");
 	try {
 		const state = JSON.parse(readFileSync(stateFile, "utf8"));
 		if (state.blockNotice && Date.now() - Number(state.blockNotice.at || 0) < 30 * 24 * 3600_000) return "";
@@ -200,49 +199,32 @@ function nonAgentBlockNotice(kind) {
 	return `\npi-tern: Tern *${kind}* block — starting pi's own interface (native surfaces need an agent block). One command fixes it: run /tern agent-setup inside pi, or set "new_blocks": "Agent" and "agent_command": "${process.argv[1] ?? "pi-tern"}" in Tern's settings.json.\n`;
 }
 
-function probe(timeoutMs = 700) {
-	if (!inTern() || process.env.PI_TERN_DISABLE_NATIVE === "1") return Promise.resolve(null);
-	return new Promise((resolve) => {
-		const wasRaw = process.stdin.isRaw;
-		let buffer = "";
-		const finish = (hello) => {
-			process.stdin.off("data", onData);
-			try {
-				process.stdin.setRawMode(Boolean(wasRaw));
-			} catch {
-				/* ignore */
-			}
-			process.stdin.pause();
-			clearTimeout(timer);
-			resolve(hello);
-		};
-		const onData = (chunk) => {
-			buffer += String(chunk);
-			const { messages } = extractMessages(buffer);
-			const hello = messages.map((message) => (isHelloReply(message) ? message.body : null)).find(Boolean);
-			if (hello) finish(hello);
-		};
-		try {
-			process.stdin.setRawMode(true);
-		} catch {
-			resolve(null);
-			return;
-		}
-		process.stdin.resume();
-		process.stdin.on("data", onData);
-		process.stdout.write(encodeHello());
-		// DA1 sentinel: Tern answers the hello before this reply.
-		process.stdout.write("\x1b[c");
-		const timer = setTimeout(() => finish(null), timeoutMs);
-	});
-}
+/** The scratch state file the extension also reads, so both halves agree on what happened. */
+const stateFile = path.join(path.dirname(mailboxDir()), "state.json");
 
 const release = resolveRelease();
 const hook = fileURLToPath(new URL("./register-hook.mjs", import.meta.url));
 if (!release || !existsSync(release.entry) || !existsSync(hook)) {
 	runStock(process.argv.slice(2));
 } else {
-	const hello = nativeEligible(process.argv.slice(2)) ? await probe() : null;
+	const eligible = nativeEligible(process.argv.slice(2));
+	const probed = eligible ? await probe() : { hello: null, reason: "not-eligible", attempts: 0 };
+	const hello = probed.hello;
+
+	// Record why the handshake failed. The old single-attempt probe fell back to stock pi silently,
+	// so the only symptom of losing the race was that native mode sometimes did not engage — with
+	// nothing to distinguish a lost reply from a wrong one. `/tern diagnose` reads this back.
+	if (hello) {
+		clearProbeFailure(stateFile);
+	} else if (eligible && probed.reason) {
+		recordProbeFailure(stateFile, probed.reason, probed.attempts);
+		if (!process.env.PI_TERN_QUIET_PROBE && probed.attempts > 0) {
+			process.stderr.write(
+				`pi-tern: no TSP handshake from Tern after ${probed.attempts} attempt(s) (${probed.reason}); starting stock pi.\n`,
+			);
+		}
+	}
+
 	if (process.env.PI_TERN_TSP_RECORD && hello) {
 		try {
 			appendFileSync(process.env.PI_TERN_TSP_RECORD, `${JSON.stringify({ t: Date.now(), dir: "in", verb: "r", body: hello })}\n`);

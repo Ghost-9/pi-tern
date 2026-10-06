@@ -14,6 +14,15 @@ export interface PiTernState {
 	paneKind?: { pane: string; kind: string; at: number };
 	/** When the "this is a terminal block" explanation was last shown, so it is said once, not per pane. */
 	blockNotice?: { kind: string; at: number };
+	/**
+	 * Why the launcher's TSP handshake failed, written by `native/pi-tern.mjs`.
+	 *
+	 * The handshake is a race, and the launcher used to fall back to stock pi silently, so the only
+	 * symptom of a lost reply was that native mode sometimes did not engage. `reason` distinguishes
+	 * `timeout` (nothing arrived), `unexpected-reply:…` (something arrived but was not a hello —
+	 * usually a version mismatch) and `no-raw-mode:…`. Cleared on the next success.
+	 */
+	probeFailure?: { reason: string; attempts: number; at: number };
 }
 
 export function stateFile(): string {

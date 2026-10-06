@@ -2133,6 +2133,9 @@ export default function piTern(pi: ExtensionAPI) {
 									version: PI_TERN_VERSION,
 									env,
 									probe: probe.status,
+									// The launcher records why a handshake failed; without it, "native mode did
+									// not engage" has no cause and the only clue is that it sometimes works.
+									probeFailure: loadState().probeFailure ?? null,
 									tern: version.stdout.trim(),
 									block: kind ?? "unknown (no pane id, or the pi-bridge plugin did not answer)",
 									native: kind ? (kind.kind === "agent" ? "surfaces display here" : "falls back — surfaces display only in an agent block") : undefined,
