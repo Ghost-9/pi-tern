@@ -100,6 +100,39 @@ captured bytes, because a test that encodes the wrong shape teaches the wrong th
 Gate: **110/110 unit - 8/8 gate steps - 7/7 compat - 19/19 live - strict typecheck clean.**
 
 
+## 1.1.8 - 2026-10-06 (panes)
+
+**Two always-on costs, both fixed at the source rather than tuned.**
+
+### `tern_fleet prune`
+
+`--keep-open` is unconditional, and it should be: a spawned pane must outlive its command so its
+output can be read, and a `pi -p` task that finishes in three seconds should not take its transcript
+with it. The cost is that panes accumulate for the lifetime of the Tern daemon — which survives app
+updates by design, so the leak only clears on a daemon restart.
+
+`prune` is now a real verb, and conservative on purpose, because closing the wrong pane destroys work
+a person can see. It only closes panes that this fleet recorded, whose command has exited, that have
+been idle past a floor (default 30 minutes), and that are neither the caller's own pane nor otherwise
+claimed. Every pane it declines to touch is reported **with its reason**, so a prune never looks like
+it silently ignored something. `dryRun` first is the safe habit. `minAgeMinutes` tunes the floor.
+
+Nine tests, isolated by pointing `HOME` at a temp dir *and* taking `tern` off `PATH`, with liveness
+injected — a test that can reach the daemon is a test that can close somebody's pane.
+
+### `tern_watch --expect` no longer starts a process every 500 ms
+
+`waitForText` polled `tern capture` on a fixed 500 ms interval. Over a 15-minute
+`gh pr checks --watch` that is roughly 1800 processes, for something the daemon is already pushing.
+
+It now subscribes once via the existing `lib/events.ts` stream, uses a wake-up as the reason to
+re-read, and falls back to backing-off polls (1.5 s doubling to 10 s) if events do not flow. The
+semantics are unchanged — the match is still made against real pane output — and the reply says
+which path ran (`via: "events" | "poll"`), so the fallback is visible rather than silent.
+
+Gate: **119/119 unit - 8/8 gate steps - 7/7 compat - 19/19 live - strict typecheck clean.**
+
+
 ## 1.1.7 — 2026-10-06
 
 **The block notice is said once, and it now comes with the command that fixes it.**

@@ -34,6 +34,7 @@ UNIT_TESTS=(
 	test/agent-setup.test.ts
 	test/version.test.ts
 	test/handshake.test.ts
+	test/fleet-prune.test.ts
 	test/native-sink.test.ts
 )
 

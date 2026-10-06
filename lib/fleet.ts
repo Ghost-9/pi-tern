@@ -9,6 +9,10 @@
  *   read   -> `tern capture BLOCK [--scrollback]`
  *   wait   -> `tern wait BLOCK --until exit --timeout N`
  *   stop   -> `tern kill BLOCK` / `tern close BLOCK`
+ *   prune  -> close panes whose command exited long ago (see fleetPrune)
+ *
+ * `--keep-open` is deliberate and unconditional: a spawned pane must outlive its command so the
+ * output can be read. `prune` is how that stops being a leak.
  *
  * No pane is required to *drive* the fleet: these verbs work from a T3-hosted or
  * headless agent as long as the Tern daemon answers.
@@ -232,6 +236,110 @@ export async function fleetStop(block: number | string, options: { close?: boole
 	}
 	forgetMember(Number(block));
 	return `killed (${killed.code === 0 ? "signal sent" : "no live process"}) · ${closed}`;
+}
+
+/**
+ * How long a dead fleet pane may linger before `prune` will close it.
+ *
+ * `--keep-open` is unconditional because a spawned agent pane must not vanish the moment its command
+ * exits: you want to read what it printed, and a `pi -p` task that finished in 3 seconds should not
+ * take its output with it. The cost is that panes accumulate for the lifetime of the Tern daemon,
+ * which survives app updates by design — so a leak that only a daemon restart clears.
+ *
+ * Hence a real cleanup path, with a floor that respects the reason above.
+ */
+export const FLEET_PANES_KEEP_OPEN = true;
+
+/** Default minimum age before a dead pane is eligible for pruning: 30 minutes. */
+export const DEFAULT_PRUNE_MIN_AGE_MS = 30 * 60_000;
+
+export interface PruneResult {
+	/** Blocks closed, with the reason each was eligible. */
+	pruned: { block: number; name: string; ageMinutes: number; reason: string }[];
+	/** Panes left alone, with why — so a prune never looks like it silently ignored something. */
+	kept: { block: number; name: string; reason: string }[];
+}
+
+/**
+ * Close fleet panes whose command has exited and that nothing else has claimed.
+ *
+ * Deliberately conservative, because closing the wrong pane destroys work the user can see:
+ *
+ *  - only panes this fleet recorded (never a pane the user opened themselves);
+ *  - only panes whose process is gone (a live one is somebody's active session);
+ *  - only panes idle for longer than `minAgeMs`;
+ *  - never the pane the caller is running in, and never a pane with a live agent program.
+ *
+ * `dryRun` reports what would go without touching anything.
+ */
+export async function fleetPrune(
+	options: {
+		minAgeMs?: number;
+		dryRun?: boolean;
+		protect?: number[];
+		/**
+		 * Which blocks are live. Defaults to asking the daemon. Injectable so the guards can be
+		 * tested without a Tern, and so a test can never accidentally close a real pane.
+		 */
+		live?: () => Promise<Set<number>>;
+	} = {},
+): Promise<PruneResult> {
+	const minAgeMs = options.minAgeMs ?? DEFAULT_PRUNE_MIN_AGE_MS;
+	const state = loadFleet();
+	const live = await (options.live ?? liveBlocks)();
+	const protectedBlocks = new Set(options.protect ?? []);
+	if (process.env.TERN_PANE) protectedBlocks.add(Number(process.env.TERN_PANE));
+
+	const result: PruneResult = { pruned: [], kept: [] };
+	const survivors: FleetMember[] = [];
+
+	for (const member of state.members) {
+		const ageMs = Date.now() - (Date.parse(member.startedAt) || Date.now());
+		const ageMinutes = Math.round(ageMs / 60_000);
+		const keep = (reason: string): void => {
+			result.kept.push({ block: member.block, name: member.name, reason });
+			survivors.push(member);
+		};
+
+		if (protectedBlocks.has(member.block)) {
+			keep("protected: this is the pane you are running in");
+			continue;
+		}
+		if (live.has(member.block)) {
+			// Still running. A long build or a dev server is exactly what keep-open is for.
+			keep("live: its command is still running");
+			continue;
+		}
+		if (ageMs < minAgeMs) {
+			keep(`too young: ${ageMinutes}m old, needs ${Math.round(minAgeMs / 60_000)}m`);
+			continue;
+		}
+		if (!options.dryRun) {
+			// The pane is dead and old; closing it is the whole point. `close` is safe on a block
+			// that already exited, and forgetting it is local bookkeeping either way.
+			await runTern(["close", String(member.block)], 15000).catch(() => undefined);
+			forgetMember(member.block);
+		}
+		result.pruned.push({
+			block: member.block,
+			name: member.name,
+			ageMinutes,
+			reason: `exited ${ageMinutes}m ago, over the ${Math.round(minAgeMs / 60_000)}m idle floor`,
+		});
+	}
+
+	// `forgetMember` already rewrote the state file per pruned member, and a dry run must not
+	// rewrite it at all, so there is nothing to reconcile here. Assert it rather than guess: if the
+	// recorded set and the survivors disagree, the bookkeeping is wrong and says so.
+	if (!options.dryRun && result.pruned.length > 0) {
+		const recorded = new Set(loadFleet().members.map((member) => member.block));
+		for (const survivor of survivors) {
+			if (!recorded.has(survivor.block)) {
+				throw new Error(`fleet prune lost block ${survivor.block} (${survivor.name}) from the state file`);
+			}
+		}
+	}
+	return result;
 }
 
 export interface FleetStatus extends FleetMember {

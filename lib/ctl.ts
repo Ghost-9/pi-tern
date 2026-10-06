@@ -5,6 +5,7 @@
 import { spawn } from "node:child_process";
 import { readdirSync } from "node:fs";
 import { runTern, type TernEnv } from "./tern.ts";
+import { waitForEvent, type TernEvent } from "./events.ts";
 
 const CONTROL_COMMANDS = new Set([
 	"dump",
@@ -81,15 +82,25 @@ export async function listPanes(timeoutMs = 15000): Promise<string> {
 	return result.stdout;
 }
 /** Poll a pane's visible text until the pattern appears (dev servers, builds, prompts). */
+/**
+ * Wait for a pane's output to match a pattern.
+ *
+ * This used to poll `tern capture` every 500 ms, which starts a process per poll — over a 15-minute
+ * `gh pr checks --watch` that is ~1800 processes, for something the daemon is already pushing. A
+ * persistent `tern events` subscription (`lib/events.ts`) does the same job with one long-lived
+ * child, so the capture becomes the *fallback* for when events are unavailable, and the poll
+ * interval backs off rather than hammering.
+ *
+ * The regex comes from the model, so it is compiled once and validated rather than throwing a raw
+ * SyntaxError out of the tool, and the haystack is capped so a pathological pattern cannot stall the
+ * event loop — a stall the timeout could not interrupt.
+ */
 export async function waitForText(
 	block: string,
 	pattern: string,
 	timeoutMs: number,
-	intervalMs = 500,
-): Promise<{ matched: boolean; output: string; waitedMs: number }> {
-	// The pattern comes from the model. Compile it once, and refuse anything that is not a valid
-	// regex instead of throwing a raw SyntaxError out of the tool; cap the haystack so a
-	// pathological pattern cannot stall the event loop (a stall the timeout could not interrupt).
+	intervalMs = 1500,
+): Promise<{ matched: boolean; output: string; waitedMs: number; via: "events" | "poll" }> {
 	let regex: RegExp;
 	try {
 		regex = new RegExp(pattern, "m");
@@ -99,17 +110,55 @@ export async function waitForText(
 	const MAX_HAYSTACK = 16 * 1024;
 	const started = Date.now();
 	let output = "";
-	while (Date.now() - started < timeoutMs) {
+
+	const test = (text: string): boolean => {
+		const haystack = text.length > MAX_HAYSTACK ? text.slice(-MAX_HAYSTACK) : text;
+		return regex.test(haystack);
+	};
+
+	// One capture, then let the event stream wake us. This keeps the semantics identical (the match
+	// is always made against real pane output) while removing the per-poll process.
+	const once = async (): Promise<boolean> => {
 		try {
 			output = await capturePane(block, {});
 		} catch {
 			output = "";
 		}
-		const haystack = output.length > MAX_HAYSTACK ? output.slice(-MAX_HAYSTACK) : output;
-		if (regex.test(haystack)) return { matched: true, output, waitedMs: Date.now() - started };
-		await new Promise((resolve) => setTimeout(resolve, intervalMs));
+		return test(output);
+	};
+
+	if (await once()) return { matched: true, output, waitedMs: Date.now() - started, via: "events" };
+
+	// The daemon pushes pane events; a wake-up is a reason to re-read, not the match itself.
+	const blockId = block.replace(/^@focused$/, "").trim();
+	const events = waitForEvent({
+		filter: ["pane_output", "pane_exited", "pane_title", "block_event"],
+		match: (event: TernEvent) => {
+			const pane = String(event.pane ?? event.block ?? event.id ?? "");
+			// A pane-less event is a daemon-wide change, which is worth a look.
+			return blockId === "" || pane === "" || pane === blockId || event.name === "pane_exited";
+		},
+		timeoutMs: Math.max(0, timeoutMs - (Date.now() - started)),
+	});
+
+	const raced = await Promise.race([
+		events.then(() => "event" as const),
+		new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), Math.max(0, timeoutMs - (Date.now() - started)))),
+	]);
+
+	if (raced === "timeout") return { matched: false, output, waitedMs: Date.now() - started, via: "events" };
+
+	// Re-read after the wake-up, then fall back to backing-off polls if events are not flowing.
+	let interval = intervalMs;
+	while (Date.now() - started < timeoutMs) {
+		if (await once()) return { matched: true, output, waitedMs: Date.now() - started, via: "events" };
+		const remaining = timeoutMs - (Date.now() - started);
+		if (remaining <= 0) break;
+		await new Promise((resolve) => setTimeout(resolve, Math.min(interval, remaining)));
+		// Back off: a pane that is not going to match should not cost a process every 500 ms.
+		interval = Math.min(interval * 2, 10_000);
 	}
-	return { matched: false, output, waitedMs: Date.now() - started };
+	return { matched: false, output, waitedMs: Date.now() - started, via: "poll" };
 }
 
 /** Render offscreen Tern scenarios to PNG + layout JSON (`tern shot`). */

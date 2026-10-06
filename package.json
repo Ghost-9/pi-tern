@@ -47,7 +47,7 @@
 		"access": "public"
 	},
 	"scripts": {
-		"test": "node --experimental-strip-types --test test/protocol.test.ts test/native.test.ts test/features.test.ts test/refs.test.ts test/bridge-luau.test.ts test/native-sink.test.ts test/agent-setup.test.ts test/version.test.ts test/handshake.test.ts",
+		"test": "node --experimental-strip-types --test test/protocol.test.ts test/native.test.ts test/features.test.ts test/refs.test.ts test/bridge-luau.test.ts test/native-sink.test.ts test/agent-setup.test.ts test/version.test.ts test/handshake.test.ts test/fleet-prune.test.ts",
 		"test:live": "node --experimental-strip-types --test test/live.test.ts",
 		"typecheck": "tsc --noEmit",
 		"lint": "oxlint index.ts lib test",

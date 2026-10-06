@@ -37,7 +37,7 @@ import { bootstrapControl, capturePane, controlCommand, listPanes, remoteHosts, 
 import { openDiagram, writeDiagram, type DiagramPlacement } from "./lib/diagram.ts";
 import { waitForEvent } from "./lib/events.ts";
 import { renderChartSvg, renderFigure, type ChartSpec, type FigureResult } from "./lib/figure.ts";
-import { fleetRead, fleetSend, fleetSpawn, fleetStatus, fleetStop, fleetWait } from "./lib/fleet.ts";
+import { fleetPrune, fleetRead, fleetSend, fleetSpawn, fleetStatus, fleetStop, fleetWait, DEFAULT_PRUNE_MIN_AGE_MS } from "./lib/fleet.ts";
 import { buildManifest, gatherEnvironment, renderManifest } from "./lib/manifest.ts";
 import { ghStatus, openPrInBrowser, prComments, prList, prSummary, prVerdict, prWatch } from "./lib/pr.ts";
 import { defaultWorktreePath, openWorktreePane, repoRoot, worktreeAdd, worktreeList, worktreePrune, worktreeRemove, worktreeStatus } from "./lib/worktree.ts";
@@ -1227,7 +1227,14 @@ export default function piTern(pi: ExtensionAPI) {
 				const result = await waitForText(params.block ?? "@focused", params.expect, timeoutMs);
 				return asText(
 					JSON.stringify(
-						{ matched: result.matched, waitedMs: result.waitedMs, tail: result.output.slice(-2000) },
+						{
+							matched: result.matched,
+							waitedMs: result.waitedMs,
+							// `events` means one long-lived `tern events` subscription woke it;
+							// `poll` means the fallback re-read with backing-off intervals.
+							via: result.via,
+							tail: result.output.slice(-2000),
+						},
 						null,
 						2,
 					),
@@ -1890,9 +1897,9 @@ export default function piTern(pi: ExtensionAPI) {
 		name: "tern_fleet",
 		label: "Tern fleet",
 		description:
-			"Run work in Tern panes and treat each pane as a thread: spawn (a `pi -p` task, an interactive pi, or any command in a visible pane), list with liveness, send (steer text or keys into a pane), read, wait for exit, stop. Works from anywhere the Tern daemon answers — no pane of your own required.",
+			"Run work in Tern panes and treat each pane as a thread: spawn (a `pi -p` task, an interactive pi, or any command in a visible pane), list with liveness, send (steer text or keys into a pane), read, wait for exit, stop, prune (close panes whose command exited long ago). Works from anywhere the Tern daemon answers — no pane of your own required.",
 		parameters: Type.Object({
-			action: Type.String({ description: "spawn|list|send|read|wait|stop" }),
+			action: Type.String({ description: "spawn|list|send|read|wait|stop|prune" }),
 			task: Type.Optional(Type.String({ description: "spawn: the prompt or task text" })),
 			name: Type.Optional(Type.String({ description: "spawn: short label used in listings and the task file" })),
 			mode: Type.Optional(Type.Union([Type.Literal("print"), Type.Literal("interactive"), Type.Literal("command")])),
@@ -1906,6 +1913,10 @@ export default function piTern(pi: ExtensionAPI) {
 			timeoutSeconds: Type.Optional(Type.Number()),
 			read: Type.Optional(Type.Boolean({ description: "list: also capture a short tail of each live pane" })),
 			tailLines: Type.Optional(Type.Number()),
+			dryRun: Type.Optional(Type.Boolean({ description: "prune: report what would close, without closing it" })),
+			minAgeMinutes: Type.Optional(
+				Type.Number({ description: `prune: minimum idle age before a dead pane is closed (default ${Math.round(DEFAULT_PRUNE_MIN_AGE_MS / 60_000)})` }),
+			),
 		}),
 		async execute(_id, params) {
 			await requireTernCli("tern_fleet");
@@ -1947,8 +1958,30 @@ export default function piTern(pi: ExtensionAPI) {
 					if (!params.block) throw new Error("stop needs a block");
 					return asText(await fleetStop(params.block));
 				}
+				case "prune": {
+					// Panes are spawned with --keep-open so a finished task's output survives to be
+					// read; without a cleanup path they accumulate for the lifetime of the daemon.
+					// `dryRun` first is the safe habit, and it reports why each pane was kept.
+					const pruned = await fleetPrune({
+						minAgeMs: params.minAgeMinutes === undefined ? undefined : params.minAgeMinutes * 60_000,
+						dryRun: params.dryRun === true,
+					});
+					return asText(
+						JSON.stringify(
+							{
+								dryRun: params.dryRun === true,
+								minAgeMinutes: Math.round((params.minAgeMinutes ?? DEFAULT_PRUNE_MIN_AGE_MS / 60_000)),
+								pruned: pruned.pruned,
+								kept: pruned.kept,
+								hint: pruned.pruned.length === 0 ? "nothing was eligible" : undefined,
+							},
+							null,
+							2,
+						),
+					);
+				}
 				default:
-					throw new Error(`unknown action '${params.action}' (spawn|list|send|read|wait|stop)`);
+					throw new Error(`unknown action '${params.action}' (spawn|list|send|read|wait|stop|prune)`);
 			}
 		},
 	});
