@@ -279,7 +279,7 @@ So the distinction is stated rather than assumed:
 | Claim | How it is checked |
 | --- | --- |
 | **Frame accepted** | Tern's own error channel. Strong, but it is acceptance — *not* display. |
-| **Layout rendered** | Needs a real Tern pane **and** pixels. There is still no automated test for this, and `tern shot` cannot produce one because a probe started via `sh -lc` does not own the pane's pty. Treat every native render claim as unverified until someone has looked at it. |
+| **Layout rendered** | **Nothing has been verified this way, ever**, and it is currently impossible: surfaces display only in an agent block, and on Tern 0.5.1 every harness command that creates one times out after 20 s — for *any* command. `scripts/render-proof.mjs` runs on every gate and reports the measured answer (today: `BLOCKED`); `--require` makes it a failure. Treat every native render claim as unverified until that probe reports a displayed surface. Full detail and reproduction: [`docs/RENDER-PROOF.md`](docs/RENDER-PROOF.md). |
 | **Works outside a Tern pane** | `scripts/verify.ts`, 19 live checks run deliberately from *outside* a pane — the property that makes pi-tern usable from another host. |
 | **Never breaks stock pi** | `native/compat.mjs` — 7 checks locally, `--static` (4, no model call) in CI. Differential: the launcher's stdio must be shape-identical to stock pi's, with no TSP frame in either. |
 | **Types are real** | `tsc --noEmit` under `strict`, against the actual pi and typebox types. `native/` is covered too, and `scripts/check-native-types.mjs` fails when a hand-written declaration names an export the module lacks. |

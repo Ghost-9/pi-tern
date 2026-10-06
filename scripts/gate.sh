@@ -6,15 +6,16 @@
 #   2. lint             oxlint (TS + the native/ launcher, which is plain .mjs)
 #   3. native decls     native/*.d.mts must match what the .mjs modules actually export
 #   4. luau source      the generated Luau is intact before anything imports the module
-#   5. unit tests       the SAME file list `npm test` runs — one list, defined once below
-#   6. stock fallback   the launcher must be invisible outside Tern (compat matrix)
-#   7. plugin loads     a window start is what compiles the Luau; `plugin reload` cannot
-#   8. live surface     the CLI-backed features must work with no Tern pane
+#   5. render proof     was a native surface actually DISPLAYED, or only accepted? (see below)
+#   6. unit tests       the SAME file list `npm test` runs — one list, defined once below
+#   7. stock fallback   the launcher must be invisible outside Tern (compat matrix)
+#   8. plugin loads     a window start is what compiles the Luau; `plugin reload` cannot
+#   9. live surface     the CLI-backed features must work with no Tern pane
 #
 # Every step reports a count. A skipped step says SKIP and is counted separately, so a green
 # run can never be read as "checked everything": the last line is `GATE PASSED (N run, M skip)`.
 #
-#   PI_TERN_SKIP_LIVE=1   skip the steps that need a running Tern (7, 8); costs ~30 s
+#   PI_TERN_SKIP_LIVE=1   skip the steps that need a running Tern (8, 9); costs ~30 s
 #   PI_TERN_REQUIRE_ALL=1 turn any skip into a failure — use this to gate a release
 #
 # The full compat matrix (7 checks) spends model calls, so it needs credentials and a working
@@ -100,6 +101,20 @@ step "native declarations" "$LOG/nativetypes.log" node scripts/check-native-type
 # Runs before the unit tests on purpose: a bare backtick in the Luau breaks the TypeScript module
 # itself, so a test inside it could never run to report the problem. This reads the file as text.
 step "generated Luau source" "$LOG/luausource.log" node scripts/check-luau-source.mjs
+
+# Frame acceptance is not display. Releases 1.1.0-1.1.4 recorded native surfaces as "verified" on
+# frame acceptance alone and shipped a P0 that removed pi's interface and drew nothing. This step
+# exists so that gap is stated on every run instead of being rediscovered: it reports BLOCKED, with
+# the measured reason, whenever the platform cannot host an agent block. Set PI_TERN_REQUIRE_ALL=1
+# and it becomes a failure.
+printf '\n=== render proof ===\n'
+if node scripts/render-proof.mjs; then
+	ran=$((ran + 1))
+	grep -E "^(ok|BLOCKED|SKIP)" "$LOG"/renderproof.log 2>/dev/null || true
+else
+	failures=$((failures + 1))
+	printf 'FAIL render proof\n'
+fi
 
 step "unit tests" "$LOG/unit.log" node --experimental-strip-types --test "${UNIT_TESTS[@]}"
 

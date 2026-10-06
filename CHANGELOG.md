@@ -133,6 +133,37 @@ which path ran (`via: "events" | "poll"`), so the fallback is visible rather tha
 Gate: **119/119 unit - 8/8 gate steps - 7/7 compat - 19/19 live - strict typecheck clean.**
 
 
+## 1.1.8 - 2026-10-06 (render proof)
+
+**The P0's real cause is now a gate step that runs on every build.**
+
+`scripts/render-proof.mjs` starts a control window of its own, asks Tern's harness to create an agent
+block, and reports the measured answer. It is a probe, not an assertion of success, and it writes a
+machine-readable `render-proof-last.json`. `--require` exits non-zero unless a surface was actually
+*displayed*, so a release cannot be gated green on frame acceptance alone.
+
+**The finding: it is currently impossible, and it is a Tern limitation rather than a pi-tern defect.**
+Native surfaces display only in an agent block, and on Tern 0.5.1 here every harness command that
+creates one returns `{"ok":false,"error":"timed out after 20s"}` — for **any** command, including
+`/usr/bin/true` and `/bin/sleep 300`, and `new-blocks agent` alone times out on a fresh window. So the
+harness cannot host an agent block at all.
+
+**And the previously recorded blocker is wrong.** The vault says Screen Recording is not granted. It
+*is*: `screencapture` returns a full-resolution 3456×2234 image. What it returns is the desktop, not
+Tern's window, while `pmset` reports the display `ON`; and addressing the window by id needs
+Accessibility, which `osascript` does not have (`-1728`). Neither route is open, but for different
+reasons than recorded.
+
+**The oracle is ready for when the platform allows it.** `tern ctl stats` reports live layout counts
+(`nodes: 594`, `frames`, `images`); a surface with content raises them and an empty one does not.
+That is a measurement rather than a validator's opinion and needs no permission.
+
+Full write-up, with the reproduction commands and a claim-by-claim table of what is verified against
+what is merely accepted: [`docs/RENDER-PROOF.md`](docs/RENDER-PROOF.md).
+
+Gate: **119/119 unit - 9/9 gate steps - 7/7 compat - 19/19 live - strict typecheck clean.**
+
+
 ## 1.1.7 — 2026-10-06
 
 **The block notice is said once, and it now comes with the command that fixes it.**
