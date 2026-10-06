@@ -3,18 +3,21 @@
  * The plugin polls every 250 ms, so budget ~0.3–0.6 s per operation; use mailboxBatch
  * for several operations in one round trip.
  */
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { bridgeDir } from "./bridge.ts";
 import { BRIDGE_PLUGIN_TOML } from "./bridge-plugin.ts";
 import { readTernEnv } from "./tern.ts";
 
 /**
- * Fail fast outside Tern instead of waiting for a mailbox timeout.
+ * Fail fast when there is no way the plugin could answer.
  *
- * The plugin lives in a Tern *window*, so a pane is not required — pi may be a T3-hosted or
- * headless agent and the window still answers. `PI_TERN_MAILBOX_PANE_ONLY=1` restores the old
- * pane-only behaviour for anyone who wants it.
+ * The data plane is a filesystem exchange: this process writes `request.json` into the shared
+ * scratch directory and the pi-bridge plugin, running in a Tern *window*, answers. So a pane is not
+ * required — a T3-hosted or headless agent works whenever a Tern window has the plugin loaded.
+ * The old guard demanded `TERM_PROGRAM=tern` or a pane socket, which contradicted the capability
+ * manifest (that reads `bridgeStatus()`). What actually disqualifies a call is pi-tern never having
+ * been installed, so that is what is checked; otherwise the mailbox's own timeout reports the truth.
  */
 function assertTernReady(): void {
 	if (process.env.PI_TERN_FORCE === "1") return;
@@ -22,10 +25,10 @@ function assertTernReady(): void {
 	if (process.env.PI_TERN_MAILBOX_PANE_ONLY === "1" && !env.inTern) {
 		throw new Error("tern tools need a Tern pane (PI_TERN_MAILBOX_PANE_ONLY=1); set PI_TERN_FORCE=1 to override");
 	}
-	if (!env.inTern && !env.paneSocket) {
+	if (env.inTern || env.paneSocket) return;
+	if (!existsSync(path.join(bridgeDir(), "window.luau"))) {
 		throw new Error(
-			"tern tools need a running Tern (no pane socket in this environment); " +
-				"start Tern, or set PI_TERN_FORCE=1 to try anyway",
+			"the pi-bridge Tern plugin is not installed — run /tern bridge install in Tern (or set PI_TERN_FORCE=1)",
 		);
 	}
 }

@@ -54,7 +54,7 @@ import { insideMultiplexer, readTernEnv, requireTernCli, runTern, scratchDir, ty
 import { describeRefs, linkifyFileRefs, parseFileRefs, type FileRef } from "./lib/refs.ts";import { cleanShellBlock, extractMermaids, extractShellBlocks, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
 import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, normalizeOsc877, type TspHello } from "./lib/tsp.ts";
 
-const PI_TERN_VERSION = "1.1.3";
+const PI_TERN_VERSION = "1.1.4";
 
 /** The only tools declared to the model; everything else is `deferred` (no schema, no listing). */
 const DIRECT_TOOLS = new Set(["tern_status", "tern_run", "tern_browser"]);

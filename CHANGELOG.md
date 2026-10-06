@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.1.4 — 2026-10-06
+
+**One fix: the mailbox guard contradicted the capability manifest.**
+
+The manifest reports the data plane available from `bridgeStatus()` (the plugin is installed and
+current), but `assertTernReady` still demanded `TERM_PROGRAM=tern` or a pane socket — so a
+T3-hosted agent was told the data plane was available and then refused when it tried to use it.
+
+The exchange is a filesystem one: this process writes `request.json` into the shared scratch
+directory and the plugin, running in a Tern **window**, answers. A pane was never required. The
+guard now fails only when pi-tern was never installed (no `window.luau` in the bridge directory),
+and otherwise lets the mailbox's own timeout report the truth. Verified from outside a pane: no
+early refusal, and an honest timeout — `is the pi-bridge plugin loaded? (press ctrl+shift+f10 in
+Tern once, or /tern bridge install)`.
+
+Gate: 78/78 unit · 7/7 compat · 19/19 live from outside a Tern pane.
+
 ## 1.1.3 — 2026-10-06
 
 **Fixes from an independent read-only audit of 1.1.2, including one P0 that made the data plane
