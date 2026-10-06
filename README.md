@@ -28,7 +28,7 @@ The extension itself never writes TSP frames, so pi's renderer is not disturbed 
 | TSP handshake | stable | Sends `hello` + DA1 on the pty and reads the reply through pi's raw input. Verified against Tern **0.5.1**, whose reply advertises 44 node kinds and 10 features. That is *Tern's* vocabulary, not pi-tern's usage — pi-tern gates on three of them (`image`, `chart`, `aside`) and emits six node kinds |
 | Mermaid diagrams | stable | `tern_diagram` / `/tern diagram` opens a file block rendered by Tern's merman engine (18 diagram types, including `xychart-beta` bar/line charts). `--last` uses the newest fence in the conversation; `pin` keeps one path so re-renders update the same block |
 | Charts | stable | `tern_chart` draws bar/hbar, line, area, pie and donut from plain data as a themed SVG that Tern renders as a native image block. `png: true` rasterizes it locally so the model can read the chart back. Value labels keep full precision |
-| Fleet panes | stable | `tern_fleet` treats a Tern pane as a thread: `spawn` (a `pi -p` task, an interactive pi, or any command) · `list` with liveness · `send` to steer · `read` · `wait` · `stop`. Task text goes through a file, so prompts cannot break the shell |
+| Fleet panes | stable | `tern_fleet` treats a Tern pane as a thread: `spawn` (a `pi -p` task, an interactive pi, or any command) · `list` with liveness · `send` to steer · `read` · `wait` · `stop` · `prune`. Task text goes through a file, so prompts cannot break the shell. Panes are spawned with `--keep-open` so a finished task's output survives; `prune` closes those that exited and have been idle past a floor (default 30m), reporting why it kept each one it did not touch. `dryRun: true` first |
 | Git worktrees | stable | `tern_worktree` list/create/remove/prune/status with dirty counts and optional `startFromOrigin`. Pure git — works with no Tern at all |
 | Pull requests | stable | `tern_pr` summary (checks collapsed to counts plus failing names, plus a one-line verdict), list, comments, `watch` (`gh pr checks --watch` in a visible pane), open in Tern's browser |
 | Capability contract | stable | `tern_status { manifest: true }` / `/tern capabilities`: one machine-readable document listing every capability, whether it is available here, and why not |
@@ -250,6 +250,9 @@ Three channels, kept separate:
   `PI_TERN_PROBE_TIMEOUT_MS`.
 - **`tern_ctl` needs a control endpoint.** Run `/tern control` (headless by default) or launch Tern with `--control EP` / set `TERN_WINDOW_SOCKET`.
 - **The pi-bridge canvas is experimental.** The plugin loads and binds its chord (verified in Tern's log and `plugin list`), but the Luau canvas rendering itself has not been visually verified from CI.
+- **`tern_watch --expect` is event-driven.** It subscribes once to `tern events` rather than starting
+  a `tern capture` process every 500 ms, and falls back to backing-off polls if events do not flow.
+  The reply reports `via: "events"` or `via: "poll"`, so the fallback is visible.
 - **Mailbox latency** is one plugin poll (~0.25–0.75 s per call); DB access is read-only unless `exec` is explicitly allowed; `agent.db`-style stores hold credentials, so pass explicit paths and never select secret columns.
 - **Notebook execution is not exposed** by Tern's plugin API; `tern_notebook` only reads open notebook blocks.
 
