@@ -1,5 +1,63 @@
 # Changelog
 
+## 1.1.2 — 2026-10-06
+
+**The Tern-only features that were deliberately left unbuilt, plus the escape bug that only a
+window start could find.**
+
+### A real panel, not a markdown canvas
+
+`tern plugin types <dir>` writes the authoritative Luau API (`tern.d.luau`, 81 KB), and it settled
+every open question rather than leaving them to guesswork:
+
+- **`tern.ui.path(path, cwd)`** — a span that *links to the file*. Clickable file references inside a
+  panel needed no invention.
+- **`tern.ui.el("button", …)`** — the HTML-subset element set includes `button`, and a canvas click
+  arrives as `CanvasAction{pane, act, text, node}`. So the controls are real buttons, not markdown
+  links pretending to be buttons.
+- **`tern.ui.bars({label, value}…)`** — a native bar chart, with no SVG and no raster round trip.
+- **`tern.route.link`** — a plugin may **claim a link click** and answer `{path, how}`.
+
+The pi-bridge canvas is now a `tern.ui` view: identity line, a native bar chart, the referenced files
+as clickable path spans, the session TOC as markdown, and four buttons (Refresh · Preview · Open in
+split · Copy paths). It falls back to plain markdown whenever `dashboard.json` is absent or the view
+fails to build, so an older plugin or a bad payload degrades instead of going blank.
+
+### File links open in the preview panel, not a full block
+
+`tern.route.link` sends every `file://` click to **`how = "preview"`** — Tern's small preview block,
+which keeps the focus. Shift-click asks for the split, so the full view is one gesture away. This
+applies to *every* file link in Tern, including the ones pi-tern emits in markdown nodes, which is
+what makes the transcript's references behave the way they should.
+
+### Native transcript modes
+
+- **`PI_TERN_FILE_STRIP`** (on by default in native mode): after a reply that mentions files, an `md`
+  node carrying clickable `file://` links is appended to the transcript. Additive — the ANSI rows,
+  tool cards, diffs and spinners are untouched.
+- **`PI_TERN_MD_TRANSCRIPT=1`**: the assistant's own markdown becomes the transcript, so every link and
+  reference is clickable and Tern highlights code and renders mermaid. Off by default because it
+  replaces the TUI rows.
+- **`tern_chart { native: true }`**: also emit a live `chart` node into the transcript.
+
+### The bug only a window start could find
+
+The plugin's Lua lives inside a TypeScript template literal, so a `\n` written where `\\n` was meant
+becomes a **real newline inside a Lua string**. Tern reports that much later, in a log, on the next
+window start — while `plugin list` still says `ready` and `plugin reload` still exits 0. It bit three
+times in this release. So:
+
+- **`test/bridge-luau.test.ts`** lints the generated Luau before it can ship: no string literal may
+  span a line, no raw control character, every escape must be one Lua understands, the manifest and
+  `PLUGIN_VERSION` must agree, and the host-only `tern.block.define` / `tern.lens.define` must not be
+  called from a window entry.
+- The verification recipe is now written down: `tern plugin reload`, force a window start with
+  `tern --exit-after-first-frame`, then grep the log for `failed to load`. Confirmed clean on Tern
+  0.5.0 — chord bound, Carly export registered, no load error.
+
+Gate: 67/67 unit tests · 7/7 compat · 19/19 live checks from outside a Tern pane.
+Prompt footprint unchanged: +774 tokens, three declared tools.
+
 ## 1.1.1 — 2026-10-06
 
 **Verified TSP encodings, clickable file links, a preview sheet, and the TSP encodings verified

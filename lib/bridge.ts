@@ -19,6 +19,10 @@ export interface DashboardData {
 	toc?: string[];
 	recent?: string[];
 	now?: Date;
+	/** Files the conversation refers to, for the panel's clickable path list. */
+	files?: Array<{ path: string; cwd?: string; line?: number; exists?: boolean }>;
+	/** A native bar chart (tern.ui.bars takes {label, value} pairs). */
+	chart?: { title?: string; series: Array<{ label: string; value: number }> };
 }
 
 export function bridgeDir(): string {
@@ -69,6 +73,58 @@ export function writeDashboard(markdown: string): string {
 	return file;
 }
 
+/**
+ * The structured panel data, written next to the markdown.
+ *
+ * The plugin prefers this: a `tern.ui` view can carry clickable path spans, a real button and
+ * a native bar chart, none of which markdown can express. The markdown file stays as the
+ * fallback for an older plugin or a failed view build.
+ */
+export function writeDashboardJson(data: DashboardData): string {
+	const dir = bridgeDir();
+	mkdirSync(dir, { recursive: true });
+	const file = path.join(dir, "dashboard.json");
+	const payload = {
+		title: `π ${data.version}`,
+		model: data.model,
+		context: data.context,
+		dir: data.cwd,
+		tern: data.tern,
+		mirror: data.mirror,
+		lastDiagram: data.lastDiagram,
+		lastShell: data.lastShell,
+		browserTabs: data.browserTabs,
+		files: (data.files ?? []).slice(0, 40),
+		chart: data.chart,
+		markdown: buildPanelMarkdown(data),
+		updatedAt: (data.now ?? new Date()).toISOString(),
+	};
+	writeFileSync(file, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+	return file;
+}
+
+/** The panel's markdown body: session TOC, recent activity and the wiring diagram. */
+function buildPanelMarkdown(data: DashboardData): string {
+	const toc = (data.toc ?? []).slice(-10);
+	const recent = (data.recent ?? []).slice(-6);
+	return [
+		"## Session",
+		...(toc.length > 0 ? toc.map((entry) => `- ${entry}`) : ["- —"]),
+		"",
+		"## Recent activity",
+		...(recent.length > 0 ? recent.map((entry) => `- ${entry}`) : ["- —"]),
+		"",
+		"## Wiring",
+		"",
+		"```mermaid",
+		"flowchart LR",
+		"  PI[pi] --> TERN[Tern]",
+		"  PI --> RUN[visible shell panes]",
+		"  PI --> DOC[native md + charts]",
+		"```",
+	].join("\n");
+}
+
 export function installBridgeFiles(): string {
 	const dir = bridgeDir();
 	mkdirSync(dir, { recursive: true });
@@ -84,14 +140,33 @@ export async function linkBridge(): Promise<{ dir: string; linkCode: number; rel
 	return { dir, linkCode: link.code, reloadCode: reload.code };
 }
 
-async function pluginList(): Promise<Array<{ id?: string; status?: string }>> {
+async function pluginList(): Promise<Array<{ id?: string; status?: string; problems?: unknown[]; version?: string }>> {
 	const result = await runTern(["plugin", "list", "--json"], 20000);
 	if (result.code !== 0) throw new Error(result.stderr.trim() || `tern plugin list exited ${result.code}`);
 	try {
-		const parsed = JSON.parse(result.stdout) as { plugins?: Array<{ id?: string; status?: string }> };
+		const parsed = JSON.parse(result.stdout) as { plugins?: Array<{ id?: string; status?: string; problems?: unknown[]; version?: string }> };
 		return parsed.plugins ?? [];
 	} catch {
 		return [];
+	}
+}
+
+/**
+ * Whether the installed bridge is the version the extension ships.
+ *
+ * A window plugin's Luau is only compiled when a window starts, so a plugin can report
+ * `ready` with `problems: []` while still running last release's code. Comparing the
+ * version is what actually catches a stale install.
+ */
+export async function bridgeStatus(): Promise<{ installed: boolean; version?: string; upToDate: boolean }> {
+	try {
+		const plugins = await pluginList();
+		const bridge = plugins.find((plugin) => plugin.id === "pi-bridge");
+		if (!bridge) return { installed: false, upToDate: false };
+		const expected = BRIDGE_PLUGIN_TOML.match(/version = "([^"]+)"/)?.[1];
+		return { installed: true, version: bridge.version, upToDate: bridge.version === expected };
+	} catch {
+		return { installed: false, upToDate: false };
 	}
 }
 

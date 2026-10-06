@@ -42,7 +42,7 @@ import { fleetRead, fleetSend, fleetSpawn, fleetStatus, fleetStop, fleetWait } f
 import { buildManifest, gatherEnvironment, renderManifest } from "./lib/manifest.ts";
 import { ghStatus, openPrInBrowser, prComments, prList, prSummary, prVerdict, prWatch } from "./lib/pr.ts";
 import { defaultWorktreePath, openWorktreePane, repoRoot, worktreeAdd, worktreeList, worktreePrune, worktreeRemove, worktreeStatus } from "./lib/worktree.ts";
-import { bridgeDir, buildDashboard, ensureBridge, linkBridge, writeDashboard } from "./lib/bridge.ts";
+import { bridgeDir, buildDashboard, ensureBridge, linkBridge, writeDashboard, writeDashboardJson } from "./lib/bridge.ts";
 import { gitGraphFromLog, mermaidFromOutput, runCommand } from "./lib/diagrams.ts";
 import { dbQueryGuard } from "./lib/guard.ts";
 import { uiTest } from "./lib/uitest.ts";
@@ -54,7 +54,7 @@ import { insideMultiplexer, readTernEnv, requireTernCli, runTern, scratchDir, ty
 import { describeRefs, linkifyFileRefs, parseFileRefs, type FileRef } from "./lib/refs.ts";import { cleanShellBlock, extractMermaids, extractShellBlocks, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
 import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, normalizeOsc877, type TspHello } from "./lib/tsp.ts";
 
-const PI_TERN_VERSION = "1.1.1";
+const PI_TERN_VERSION = "1.1.2";
 
 /** The only tools declared to the model; everything else is `deferred` (no schema, no listing). */
 const DIRECT_TOOLS = new Set(["tern_status", "tern_run", "tern_browser"]);
@@ -100,6 +100,8 @@ const browserTabs: number[] = [];
 /** File references seen in the newest assistant reply, for tern_files and auto-preview. */
 let lastRefs: FileRef[] = [];
 let lastRefsAt = 0;
+/** The last chart the agent drew, so the Tern panel can show it natively. */
+let lastChart: { title?: string; series: Array<{ label: string; value: number }> } | undefined;
 
 // ── Phase A state ────────────────────────────────────────────────────────
 let lastMermaid: { source: string; at: number; hash: string } | null = null;
@@ -110,6 +112,8 @@ let mirrorToc: string[] = [];
 let mirrorStartedAt = new Date();
 let mirrorWritten = 0;
 let mirrorTimer: ReturnType<typeof setTimeout> | undefined;
+let mdTranscriptAnnounced = false;
+let mdTranscriptSeq = 0;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -349,25 +353,32 @@ function refreshBridge(ctx: any): void {
 		const env = readTernEnv();
 		const model = String((ctx?.model as any)?.id ?? (ctx?.model as any)?.name ?? "pi").split("/").pop() ?? "pi";
 		const usage = ctx?.getContextUsage?.();
-		writeDashboard(
-			buildDashboard({
-				version: PI_TERN_VERSION,
-				tern: env.version,
-				model,
-				context: typeof usage?.percent === "number" ? `${Math.round(usage.percent)}%` : undefined,
+		const data = {
+			version: PI_TERN_VERSION,
+			tern: env.version,
+			model,
+			context: typeof usage?.percent === "number" ? `${Math.round(usage.percent)}%` : undefined,
+			cwd: process.cwd(),
+			mirror: mirrorEnabled ? mirrorFile() : "off",
+			lastDiagram: loadState().lastDiagram,
+			lastShell: lastShell ? new Date(lastShell.at).toISOString().slice(11, 19) : undefined,
+			browserTabs: [...browserTabs],
+			toc: [...mirrorToc],
+			recent: [
+				...(lastShell ? [`shell · ${new Date(lastShell.at).toISOString().slice(11, 19)}`] : []),
+				...(lastMermaid ? [`diagram · ${new Date(lastMermaid.at).toISOString().slice(11, 19)}`] : []),
+				...(mirrorEnabled ? ["mirror · on"] : []),
+			],
+			files: lastRefs.slice(0, 40).map((ref) => ({
+				path: ref.abs ?? ref.raw,
 				cwd: process.cwd(),
-				mirror: mirrorEnabled ? mirrorFile() : "off",
-				lastDiagram: loadState().lastDiagram,
-				lastShell: lastShell ? new Date(lastShell.at).toISOString().slice(11, 19) : undefined,
-				browserTabs: [...browserTabs],
-				toc: [...mirrorToc],
-				recent: [
-					...(lastShell ? [`shell · ${new Date(lastShell.at).toISOString().slice(11, 19)}`] : []),
-					...(lastMermaid ? [`diagram · ${new Date(lastMermaid.at).toISOString().slice(11, 19)}`] : []),
-					...(mirrorEnabled ? ["mirror · on"] : []),
-				],
-			}),
-		);
+				line: ref.line,
+				exists: ref.exists,
+			})),
+			chart: lastChart,
+		};
+		writeDashboard(buildDashboard(data));
+		writeDashboardJson(data);
 	} catch {
 		/* best effort */
 	}
@@ -416,6 +427,23 @@ function resolveRef(refs: FileRef[], wanted: string | undefined, cwd: string): F
 	return preferred;
 }
 
+/** Normalize either chart shape into plain `{label, value}` pairs (what tern.ui.bars takes). */
+function chartSeries(spec: ChartSpec): Array<{ label: string; value: number }> {
+	if ("data" in spec && Array.isArray(spec.data)) {
+		return spec.data.map((point) => ({ label: String(point.label), value: Number(point.value) || 0 }));
+	}
+	const lineSpec = spec as { labels?: string[]; series?: Array<{ name: string; values: number[] }> };
+	const labels = lineSpec.labels ?? [];
+	const series = lineSpec.series ?? [];
+	if (series.length === 1) {
+		return series[0].values.map((value, index) => ({ label: labels[index] ?? `#${index + 1}`, value: Number(value) || 0 }));
+	}
+	return series.map((line) => ({
+		label: line.name,
+		value: line.values.reduce((sum, value) => sum + (Number(value) || 0), 0),
+	}));
+}
+
 /**
  * Remember the files an assistant reply refers to, and optionally act on them.
  *
@@ -431,9 +459,65 @@ function collectFileRefs(message: unknown): void {
 		if (refs.length === 0) return;
 		lastRefs = refs;
 		lastRefsAt = Date.now();
+		publishFileStrip(refs);
+		publishMarkdownTranscript(text);
 		maybePreviewRefs(refs);
 	} catch {
 		/* reference detection must never break a turn */
+	}
+}
+
+/**
+ * Publish the referenced files as a clickable markdown strip in the transcript.
+ *
+ * Additive on purpose: it appends to `main` without touching the ANSI rows, so tool cards,
+ * diffs and spinners keep working. `file://` links are what Tern opens on click, and the
+ * pi-bridge plugin routes those into the preview panel rather than a full file block.
+ */
+function publishFileStrip(refs: FileRef[]): void {
+	if (process.env.PI_TERN_FILE_STRIP === "0") return;
+	const sink = (globalThis as { __piTernNative?: { appendMarkdown?: (input: unknown) => unknown } }).__piTernNative;
+	if (!sink?.appendMarkdown) return;
+	const existing = refs.filter((ref) => ref.exists);
+	if (existing.length === 0) return;
+	const lines = existing.slice(0, 12).map((ref) => {
+		const label = ref.line !== undefined ? `${ref.raw}:${ref.line}` : ref.raw;
+		return `- [\`${label}\`](${ref.url})`;
+	});
+	try {
+		sink.appendMarkdown({ id: "pfiles", text: `**${existing.length} file${existing.length === 1 ? "" : "s"} referenced**\n\n${lines.join("\n")}` });
+	} catch {
+		/* the transcript must never break */
+	}
+}
+
+/**
+ * Opt-in `PI_TERN_MD_TRANSCRIPT=1`: the assistant's own markdown becomes the transcript.
+ *
+ * Every file reference and link in a reply then becomes clickable, and Tern highlights code and
+ * renders mermaid — at the cost of the TUI look, because the ANSI rows are replaced. Off by
+ * default for exactly that reason.
+ */
+function publishMarkdownTranscript(text: string): void {
+	if (process.env.PI_TERN_MD_TRANSCRIPT !== "1") return;
+	const sink = (globalThis as {
+		__piTernNative?: { appendMarkdown?: (input: unknown) => unknown; transcript?: (mode: string) => unknown };
+	}).__piTernNative;
+	if (!sink?.appendMarkdown) return;
+	if (!mdTranscriptAnnounced) {
+		mdTranscriptAnnounced = true;
+		try {
+			sink.transcript?.("md");
+		} catch {
+			/* keep going */
+		}
+	}
+	const linked = linkifyFileRefs(text, parseFileRefs(text, { cwd: process.cwd(), limit: 40 }));
+	mdTranscriptSeq += 1;
+	try {
+		sink.appendMarkdown({ id: `tm${mdTranscriptSeq}`, text: linked.slice(0, 20000) });
+	} catch {
+		/* the transcript must never break */
 	}
 }
 
@@ -1474,6 +1558,12 @@ export default function piTern(pi: ExtensionAPI) {
 			theme: Type.Optional(Type.Union([Type.Literal("dark"), Type.Literal("light")])),
 			width: Type.Optional(Type.Number({ description: "SVG width in px (280-1600, default 720)" })),
 			png: Type.Optional(Type.Boolean({ description: "Also screenshot the figure and return it as an image" })),
+			native: Type.Optional(
+				Type.Boolean({
+					description:
+						"Native mode only: also emit a live `chart` node into the transcript (Tern draws it itself, no raster round trip)",
+				}),
+			),
 			inline: Type.Optional(
 				Type.Boolean({ description: "Native mode only: append the figure into this conversation (implies png)" }),
 			),
@@ -1512,13 +1602,33 @@ export default function piTern(pi: ExtensionAPI) {
 				spec = { kind: kind === "bar" ? "hbar" : kind, data: params.data, title: params.title, subtitle: params.subtitle, unit: params.unit };
 			}
 			const svg = renderChartSvg(spec, { width: params.width, theme: params.theme });
+			const series = chartSeries(spec);
+			lastChart = { title: params.title, series };
 			const figure = await renderFigure({
 				route: "svg",
 				source: svg,
 				...shared,
 				label: params.title ?? kind,
 			});
-			return figureContent(figure, params.inline === true);
+			const result = figureContent(figure, params.inline === true);
+			if (params.native) {
+				const sink = (globalThis as {
+					__piTernNative?: { chart?: (input: unknown) => { ok?: boolean; reason?: string; points?: number } };
+				}).__piTernNative;
+				let note: string;
+				if (!sink?.chart) note = "native chart: skipped — native mode is not active";
+				else {
+					const sent = sink.chart({ series, title: params.title });
+					note = sent?.ok
+						? "native chart: emitted into the transcript"
+						: `native chart: not emitted — ${sent?.reason ?? "refused"}`;
+				}
+				const first = result.content[0];
+				if (first?.type === "text") {
+					result.content[0] = { type: "text" as const, text: `${first.text}\n${note}` };
+				}
+			}
+			return result;
 		},
 	});
 

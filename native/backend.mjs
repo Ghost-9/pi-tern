@@ -40,6 +40,7 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 	let lastEditor = "";
 	let editor = null;
 	let mainAdded = Boolean(adopt);
+	let rowsAdded = false;
 	let dockAdded = false;
 	let editorAdded = false;
 	let statusAdded = false;
@@ -50,6 +51,8 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 	let figureSeq = 0;
 	let figures = [];
 	let asideAdded = false;
+	let transcriptMode = "rows";
+	let transcriptMdSeq = 0;
 	const asideNodes = new Set();
 	const markdownNodes = new Map();
 
@@ -166,6 +169,7 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 					lastError = { at: Date.now(), msg };
 					if (msg.includes("unknown id main") || msg.includes("unknown id m")) {
 						mainAdded = false;
+						rowsAdded = false;
 						figures = [];
 						markdownNodes.clear();
 					}
@@ -210,6 +214,7 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 				kinds: (hello?.kinds ?? []).length,
 				figures: figures.length,
 				markdownNodes: markdownNodes.size,
+				transcriptMode,
 				aside: asideAdded,
 				lastError,
 			};
@@ -310,6 +315,60 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 			send("f", { sf: surface, s: seq, ops: [["show", "aside"]] });
 			return { ok: true };
 		},
+		/**
+		 * `md` replaces the ANSI rows in the transcript with markdown nodes; `rows` restores them.
+		 *
+		 * Markdown is what makes file references clickable, but it is pi's TUI text that carries tool
+		 * cards, diffs and spinners — so this is a switch, not a default.
+		 */
+		transcript(mode) {
+			if (mode !== "md" && mode !== "rows") return { ok: false, reason: "mode must be md or rows" };
+			transcriptMode = mode;
+			dirty = true;
+			schedule();
+			return { ok: true, mode };
+		},
+		/** Append one markdown block to the transcript (used by md-transcript mode and the file strip). */
+		appendMarkdown({ text, id, caption } = {}) {
+			if (typeof text !== "string" || text.length === 0) return { ok: false, reason: "no markdown text" };
+			open();
+			transcriptMdSeq += 1;
+			const nodeId = id ?? `tm${transcriptMdSeq}`;
+			const props = { text };
+			if (caption) props.caption = String(caption);
+			const known = markdownNodes.get(nodeId);
+			const ops = known
+				? [["set", nodeId, props]]
+				: [["add", nodeId, "main", null, { id: nodeId, k: "md", p: props }]];
+			markdownNodes.set(nodeId, true);
+			seq += 1;
+			send("f", { sf: surface, s: seq, ops });
+			return { ok: true, id: nodeId, chars: text.length, updated: Boolean(known) };
+		},
+		/**
+		 * A native bar chart.
+		 *
+		 * Tern accepted `{k:"chart"}` in the encoding probe; `tern.ui.bars` documents the payload as
+		 * `{label, value}` pairs, so `bars` is what we send. Acceptance is not proof of rendering
+		 * (Tern ignores unknown props), hence the flag: this stays opt-in until it has been seen.
+		 */
+		chart({ series, title, id = "pc" } = {}) {
+			if (!Array.isArray(series) || series.length === 0) return { ok: false, reason: "chart needs series" };
+			if ((hello?.kinds ?? []).includes("chart") === false && process.env.PI_TERN_FORCE !== "1") {
+				return { ok: false, reason: "Tern does not advertise a `chart` node kind" };
+			}
+			open();
+			const props = { kind: "bars", bars: series };
+			if (title) props.title = String(title);
+			const known = markdownNodes.get(id);
+			const ops = known
+				? [["set", id, props]]
+				: [["add", id, "main", null, { id, k: "chart", p: props }]];
+			markdownNodes.set(id, true);
+			seq += 1;
+			send("f", { sf: surface, s: seq, ops });
+			return { ok: true, id, points: series.length };
+		},
 		hideAside() {
 			if (!asideAdded) return { ok: false, reason: "no aside is open" };
 			seq += 1;
@@ -391,12 +450,24 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 			seq += 1;
 			const ops = [];
 			// Regions are root nodes added under the surface id; `main`/`dock` are their node ids.
+			// In md-transcript mode the rows node is removed once and the transcript is markdown only.
 			const mainNode = { id: "m", k: "rows", p: { cols, lines: main } };
 			if (!mainAdded) {
-				ops.push(["add", "main", surface, null, { id: "main", k: "col", c: [mainNode] }]);
+				ops.push(["add", "main", surface, null, { id: "main", k: "col", c: transcriptMode === "md" ? [] : [mainNode] }]);
 				mainAdded = true;
+				rowsAdded = transcriptMode !== "md";
+			} else if (transcriptMode === "md") {
+				if (rowsAdded) {
+					ops.push(["del", "m"]);
+					rowsAdded = false;
+				}
 			} else {
-				ops.push(["set", "m", { cols, lines: main }]);
+				if (!rowsAdded) {
+					ops.push(["add", "m", "main", null, mainNode]);
+					rowsAdded = true;
+				} else {
+					ops.push(["set", "m", { cols, lines: main }]);
+				}
 			}
 			const editorNode =
 				state && parts ? { id: "e", k: "editor", p: { text: state.text, cursor: state.cursor, sendable: true } } : null;
