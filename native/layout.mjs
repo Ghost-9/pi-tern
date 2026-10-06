@@ -3,7 +3,10 @@
  * box (a long horizontal rule). Split the screen there so the transcript area can
  * live in `main` and the composer/status stays pinned in `dock`.
  */
-const RULE = /^[\s\u2500\u2501-]*[\u2500\u2501-]{8,}/;
+// Anchored on purpose: the earlier form matched any line *containing* eight rule characters, so a
+// markdown `----------` or a diff hunk line inside the transcript could be mistaken for the
+// composer's box and moved into `dock`.
+const RULE = /^[\s\u2500\u2501-]*[\u2500\u2501-]{8,}[\s\u2500\u2501-]*$/;
 
 function isRule(line) {
 	return RULE.test(line.replace(/\x1b\[[0-9;]*m/g, ""));

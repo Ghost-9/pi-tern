@@ -10,8 +10,10 @@
  * That happened three times while building 1.1.2, so it is now a test rather than a habit.
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { BRIDGE_PLUGIN_TOML, BRIDGE_WINDOW_LUAU } from "../lib/bridge-plugin.ts";
+import { EXPECTED_PLUGIN_VERSION } from "../lib/mailbox.ts";
 
 /** Count unescaped double quotes outside a comment. */
 function quoteBalance(line: string): number {
@@ -57,6 +59,17 @@ test("the plugin manifest version matches the Lua and the package", () => {
 	const luaVersion = BRIDGE_WINDOW_LUAU.match(/PLUGIN_VERSION = "([^"]+)"/)?.[1];
 	assert.ok(tomlVersion, "manifest declares a version");
 	assert.equal(luaVersion, tomlVersion, "PLUGIN_VERSION matches the manifest");
+});
+
+test("the mailbox expects exactly the plugin version this extension ships", () => {
+	// These were two hand-maintained constants and they drifted: the plugin moved to 1.1.2 while
+	// the guard still expected 0.9.0, so every data-plane call rejected a correct reply. The
+	// constant is now derived, and this asserts the derivation still holds.
+	const tomlVersion = BRIDGE_PLUGIN_TOML.match(/version = "([^"]+)"/)?.[1];
+	assert.equal(EXPECTED_PLUGIN_VERSION, tomlVersion);
+	assert.notEqual(EXPECTED_PLUGIN_VERSION, "0.0.0", "the version must parse from the manifest");
+	const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+	assert.equal(tomlVersion, pkg.version, "the plugin manifest tracks the package version");
 });
 
 test("the window half only uses APIs it is allowed to use", () => {

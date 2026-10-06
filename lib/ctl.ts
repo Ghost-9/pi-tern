@@ -80,7 +80,6 @@ export async function listPanes(timeoutMs = 15000): Promise<string> {
 	if (result.code !== 0) throw new Error(result.stderr.trim() || `tern ls exited ${result.code}`);
 	return result.stdout;
 }
-
 /** Poll a pane's visible text until the pattern appears (dev servers, builds, prompts). */
 export async function waitForText(
 	block: string,
@@ -88,7 +87,16 @@ export async function waitForText(
 	timeoutMs: number,
 	intervalMs = 500,
 ): Promise<{ matched: boolean; output: string; waitedMs: number }> {
-	const regex = new RegExp(pattern, "m");
+	// The pattern comes from the model. Compile it once, and refuse anything that is not a valid
+	// regex instead of throwing a raw SyntaxError out of the tool; cap the haystack so a
+	// pathological pattern cannot stall the event loop (a stall the timeout could not interrupt).
+	let regex: RegExp;
+	try {
+		regex = new RegExp(pattern, "m");
+	} catch (error) {
+		throw new Error(`invalid pattern: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	const MAX_HAYSTACK = 16 * 1024;
 	const started = Date.now();
 	let output = "";
 	while (Date.now() - started < timeoutMs) {
@@ -97,7 +105,8 @@ export async function waitForText(
 		} catch {
 			output = "";
 		}
-		if (regex.test(output)) return { matched: true, output, waitedMs: Date.now() - started };
+		const haystack = output.length > MAX_HAYSTACK ? output.slice(-MAX_HAYSTACK) : output;
+		if (regex.test(haystack)) return { matched: true, output, waitedMs: Date.now() - started };
 		await new Promise((resolve) => setTimeout(resolve, intervalMs));
 	}
 	return { matched: false, output, waitedMs: Date.now() - started };

@@ -53,10 +53,16 @@ export function runTern(args: string[], timeoutMs = 30000): Promise<RunResult> {
 	});
 }
 
-/** Scratch dir for generated diagrams. */
+/** Scratch dir for generated diagrams. Memoised per home directory: this is called several times per turn. */
+let scratchDirCache: { home: string; dir: string } | undefined;
 export function scratchDir(): string {
-	const dir = path.join(os.homedir(), ".pi", "agent", "scratch", "pi-tern");
+	// Keyed on the resolved home, not cached globally: tests (and anyone changing HOME) must get
+	// the directory their environment actually points at.
+	const home = os.homedir();
+	if (scratchDirCache && scratchDirCache.home === home) return scratchDirCache.dir;
+	const dir = path.join(home, ".pi", "agent", "scratch", "pi-tern");
 	mkdirSync(dir, { recursive: true });
+	scratchDirCache = { home, dir };
 	return dir;
 }
 

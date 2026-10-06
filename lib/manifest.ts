@@ -6,6 +6,7 @@
  * from `/tern doctor --json`. `contract` is bumped only when the *shape* changes,
  * so a consumer can pin to it.
  */
+import { bridgeStatus } from "./bridge.ts";
 import { detectRasterizer } from "./figure.ts";
 import { ghStatus } from "./pr.ts";
 import { readTernEnv, ternAvailable, type TernEnv } from "./tern.ts";
@@ -38,6 +39,8 @@ export interface Manifest {
 		windowSocket: boolean;
 		paneSocket: boolean;
 		gh: { available: boolean; authenticated: boolean; detail?: string };
+		/** The pi-bridge Tern plugin: the data plane and Carly need it, and a stale copy is a failure. */
+		bridge: { installed: boolean; upToDate: boolean; version?: string };
 		rasterizer?: string;
 		native: unknown;
 	};
@@ -60,6 +63,14 @@ export interface ManifestInput {
 export async function gatherEnvironment(env: TernEnv): Promise<Manifest["environment"]> {
 	const availability = await ternAvailable();
 	const gh = await ghStatus();
+	let bridge: Manifest["environment"]["bridge"] = { installed: false, upToDate: false };
+	if (availability.cli) {
+		try {
+			bridge = await bridgeStatus();
+		} catch {
+			/* an unreadable plugin list reads as "not installed", which is honest */
+		}
+	}
 	return {
 		inPane: env.inTern,
 		ternCli: availability.cli,
@@ -70,6 +81,7 @@ export async function gatherEnvironment(env: TernEnv): Promise<Manifest["environ
 		windowSocket: Boolean(env.windowSocket),
 		paneSocket: Boolean(env.paneSocket),
 		gh: { available: gh.available, authenticated: gh.authenticated, detail: gh.detail },
+		bridge,
 		rasterizer: detectRasterizer(),
 		native: (globalThis as { __piTernNative?: { state?: () => unknown } }).__piTernNative?.state?.() ?? null,
 	};
@@ -80,6 +92,13 @@ export function buildManifest(input: ManifestInput, environment: Manifest["envir
 	const hasPane = environment.inPane;
 	const hasGh = environment.gh.available && environment.gh.authenticated;
 	const native = environment.native !== null && environment.native !== undefined;
+	// The data plane and Carly are served by the Tern plugin, not by the CLI: claiming them from
+	// "the CLI answered" was wrong, and an orchestrator that trusted it scheduled work that always
+	// failed. A pane is not required — a Tern window with the plugin is.
+	const bridgeReady = environment.bridge.installed && environment.bridge.upToDate;
+	const bridgeReason = environment.bridge.installed
+		? `the pi-bridge Tern plugin is v${environment.bridge.version ?? "?"}, not the shipped version — reload it`
+		: "the pi-bridge Tern plugin is not installed in a Tern window (run /tern bridge install)";
 
 	const capability = (
 		id: string,
@@ -111,10 +130,10 @@ export function buildManifest(input: ManifestInput, environment: Manifest["envir
 			"tern_pr",
 		),
 		capability("pr.watch.pane", hasGh && hasTern, ["gh", "tern-cli"], hasTern ? undefined : "Tern CLI unavailable", "tern_pr"),
-		capability("data.docs", hasTern && hasPane || native, ["tern-plugin"], "needs the pi-bridge mailbox (window-half plugin)", "tern_doc"),
-		capability("data.boards", hasTern, ["tern-plugin"], undefined, "tern_board"),
-		capability("data.sqlite", hasTern, ["tern-plugin"], undefined, "tern_db"),
-		capability("carly.ask", hasTern, ["tern-plugin"], undefined, "tern_carly"),
+		capability("data.docs", bridgeReady, ["tern-plugin"], bridgeReady ? undefined : bridgeReason, "tern_doc"),
+		capability("data.boards", bridgeReady, ["tern-plugin"], bridgeReady ? undefined : bridgeReason, "tern_board"),
+		capability("data.sqlite", bridgeReady, ["tern-plugin"], bridgeReady ? undefined : bridgeReason, "tern_db"),
+		capability("carly.ask", bridgeReady, ["tern-plugin"], bridgeReady ? undefined : bridgeReason, "tern_carly"),
 		capability("ui.test", hasTern, ["tern-cli"], environment.ternCli ? undefined : "Tern CLI unavailable", "tern_ui_test"),
 		capability("shot.golden", hasTern, ["tern-cli"], undefined, "tern_shot"),
 		capability("remote.hosts", hasTern, ["tern-cli"], undefined, "tern_remote"),

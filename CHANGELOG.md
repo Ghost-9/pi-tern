@@ -1,5 +1,66 @@
 # Changelog
 
+## 1.1.3 — 2026-10-06
+
+**Fixes from an independent read-only audit of 1.1.2, including one P0 that made the data plane
+unusable.** Every item below is the audit's finding plus the fix; the audit was run in parallel with
+the 1.1.2 build, by a fresh-context reviewer that only read code.
+
+### P0 — the version guard rejected the plugin it ships
+
+`lib/mailbox.ts` held a hand-maintained `EXPECTED_PLUGIN_VERSION = "0.9.0"` while the plugin had
+moved to `1.1.2`. `awaitResponse` rejects any reply whose `v` differs, so **every** data-plane call
+(`tern_db`, `tern_doc`, `tern_board`, `tern_carly`, `tern_notebook`, `tern_settings` and their
+`/tern …` commands) returned "the Tern window still runs old plugin code" on a *fresh* window. The
+constant is now derived from `BRIDGE_PLUGIN_TOML`, and `test/bridge-luau.test.ts` asserts that the
+manifest, the Lua `PLUGIN_VERSION` and `package.json` all agree — the drift cannot recur silently.
+
+### P1 — the capability manifest described a different program
+
+`data.docs/boards/sqlite` and `carly.ask` were reported available whenever the *Tern CLI* answered,
+but they are served by the Tern **plugin**, and the mailbox refused to run outside a pane. An
+orchestrator trusting `tern_status {manifest:true}` would schedule work that always failed. The
+manifest now takes its answer from `bridgeStatus()` (installed **and** current), with a reason naming
+the installed version when they differ, and the mailbox's pane requirement is relaxed to "a Tern
+window is running" — a pane was never actually needed.
+
+### P1 — two input holes
+
+- **Shell injection.** `prWatch` interpolated the PR selector into `gh pr checks <selector> --watch`
+  and ran it under `sh -lc`, so `;`, `&`, `|` or a URL with a query string became a second command.
+  `safeSelector()` validates to `[A-Za-z0-9._~#:/@-]` and single-quotes it; the direct (non-pane)
+  path now passes argv to `gh` with no shell at all.
+- **Regex.** `tern_watch --expect` compiled a model-supplied pattern unguarded and ran it over the
+  whole capture buffer, so a bad pattern threw a raw `SyntaxError` and a pathological one blocked the
+  event loop — a stall the surrounding timeout could not interrupt. The pattern is compiled once
+  inside a `try`, and the haystack is capped at 16 KB.
+
+### P2 — the rest of the audit
+
+| Fix | Detail |
+| --- | --- |
+| A `PENDING` status check counted as failing | `prVerdict` said "1 failing check" for a queued status; the changelog had claimed this was fixed when it was not. |
+| `relayPing` could never fail | It swallowed the error and always returned `ok: true`, so `/tern diagnose` reported a healthy relay with `PI_TERN_RELAY=0` or a dead socket. |
+| `new URL(...).pathname` | Three native entry points resolved their own path that way, so a space in `HOME` broke the loader hook **silently** (missing hook means it falls back to stock pi). Now `fileURLToPath`. |
+| `tern events` stderr | Piped and never read: a chatty line could fill the 64 KB pipe and stall the child until the timeout. |
+| Native input buffer | One stray TSP prefix with no terminator made `handleInput` swallow every keystroke afterwards; past 8 KB the bytes are handed back to pi. |
+| Native repaint | Frames were only published on a synchronized-output write, so a resize clear or a startup write could leave the surface visibly stale. The debounce already prevents flooding. |
+| Dock-split rule | The regex matched any line *containing* eight rule characters, so a markdown `----------` or a diff hunk in the transcript could be reclassified as the composer and moved into `dock`. Anchored. |
+| Dead `bridgeStatus()` | Exported and called from nowhere; it now gates `ensureBridge`, so a stale plugin self-heals instead of running last release's Luau — and the write is skipped entirely when the version already matches. |
+| `scratchDir()` per call | Ran `mkdirSync` on every invocation (several per turn, via `stateFile()`); memoised **per home directory**, so a changed `HOME` still resolves correctly. |
+| Dashboard rewrite per turn | Two files plus a full `JSON.stringify` were rewritten on every `turn_end` even when nothing changed; now fingerprinted and skipped. |
+| Gate weaker than CI | `scripts/gate.sh` ran three of five test files and linted neither `scripts/` nor `native/`; it now runs `npm test` and lints both. |
+| `verify.ts` had a check that could not fail | `record("fleet: stop", true, …)` — the pass flag was hard-coded, so "19/19" over-counted by one. |
+| `/tern` advertised four subcommands that do not exist | `chart`, `fleet`, `pr` and `worktree` are tools, not subcommands; the description now says so. |
+
+**Reported and deliberately not changed** (design decisions, not defects): visible panes accumulate
+because `--keep-open` is unconditional and only `tern_fleet stop` reaps one; `tern_watch --expect`
+spawns a `tern capture` process per 500 ms poll; `types/pi.d.ts` is an identity stub, so `tsc` is not
+evidence about the pi API surface.
+
+Gate: 78/78 unit tests · 7/7 compat · 19/19 live checks from outside a Tern pane.
+Prompt footprint unchanged: +774 tokens, three declared tools.
+
 ## 1.1.2 — 2026-10-06
 
 **The Tern-only features that were deliberately left unbuilt, plus the escape bug that only a

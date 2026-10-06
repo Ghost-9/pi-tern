@@ -156,7 +156,6 @@ export async function prSummary(options: { cwd?: string; selector?: string }): P
 				"ACTION_REQUIRED",
 				"STARTUP_FAILURE",
 				"STALE",
-				"PENDING",
 			].includes(conclusion)
 		) {
 			failing += 1;
@@ -220,6 +219,24 @@ export interface PrWatchResult {
 }
 
 /**
+ * A PR selector is a number, a URL, a branch, or `owner/repo#n`.
+ *
+ * It reaches a shell (`gh pr checks <selector> --watch` runs inside a visible Tern pane), so it is
+ * validated to a conservative character set and single-quoted rather than interpolated raw —
+ * otherwise a branch name containing `;` or `&` becomes a second command.
+ */
+export function safeSelector(selector: string | undefined): string {
+	const trimmed = (selector ?? "").trim();
+	if (trimmed === "") return "";
+	if (!/^[A-Za-z0-9._~#:/@-]+$/.test(trimmed)) {
+		throw new Error(
+			`unsafe PR selector: ${JSON.stringify(trimmed)} — use a number, URL, or branch (letters, digits, . _ ~ # : / @ -)`,
+		);
+	}
+	return `'${trimmed.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
  * Run `gh pr checks --watch` in a visible Tern pane and wait for it to finish.
  * Falling back to a plain (invisible) run when Tern is unavailable keeps the tool
  * useful in CI.
@@ -231,8 +248,9 @@ export async function prWatch(options: {
 	inPane?: boolean;
 }): Promise<PrWatchResult> {
 	await requireGh();
-	const selector = options.selector?.trim() || "";
-	const command = `gh pr checks${selector ? ` ${selector}` : ""} --watch --interval 30`;
+	const raw = (options.selector ?? "").trim();
+	const quoted = safeSelector(raw);
+	const command = `gh pr checks${quoted ? ` ${quoted}` : ""} --watch --interval 30`;
 	if (options.inPane !== false) {
 		try {
 			const ran = await runShellInTern(command, {
@@ -241,7 +259,7 @@ export async function prWatch(options: {
 			});
 			let summary: PrSummary | undefined;
 			try {
-				summary = await prSummary({ cwd: options.cwd, selector });
+				summary = await prSummary({ cwd: options.cwd, selector: raw });
 			} catch {
 				/* the checks output is still the evidence */
 			}
@@ -251,7 +269,7 @@ export async function prWatch(options: {
 		}
 	}
 	const result = await gh(
-		["pr", "checks", ...(selector ? [selector] : []), "--watch", "--interval", "30"],
+		["pr", "checks", ...(raw ? [raw] : []), "--watch", "--interval", "30"],
 		options.cwd,
 		options.timeoutMs ?? 900000,
 	);

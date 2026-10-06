@@ -29,7 +29,7 @@
  *   PI_TERN_BLOB_OP        native mode: blob wire shape (id-mime-data|mime-data|inline)
  */
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -54,7 +54,7 @@ import { insideMultiplexer, readTernEnv, requireTernCli, runTern, scratchDir, ty
 import { describeRefs, linkifyFileRefs, parseFileRefs, type FileRef } from "./lib/refs.ts";import { cleanShellBlock, extractMermaids, extractShellBlocks, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
 import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, normalizeOsc877, type TspHello } from "./lib/tsp.ts";
 
-const PI_TERN_VERSION = "1.1.2";
+const PI_TERN_VERSION = "1.1.3";
 
 /** The only tools declared to the model; everything else is `deferred` (no schema, no listing). */
 const DIRECT_TOOLS = new Set(["tern_status", "tern_run", "tern_browser"]);
@@ -347,12 +347,16 @@ function startMirror(ctx: any): void {
 }
 
 /** Write the Markdown dashboard the pi-bridge Tern canvas renders. */
+/** Last payload written, so an unchanged turn does not rewrite two files for nothing. */
+let lastDashboardFingerprint = "";
+
 function refreshBridge(ctx: any): void {
 	if (!readTernEnv().inTern && process.env.PI_TERN_FORCE !== "1") return;
 	try {
 		const env = readTernEnv();
 		const model = String((ctx?.model as any)?.id ?? (ctx?.model as any)?.name ?? "pi").split("/").pop() ?? "pi";
 		const usage = ctx?.getContextUsage?.();
+		const persisted = loadState();
 		const data = {
 			version: PI_TERN_VERSION,
 			tern: env.version,
@@ -360,7 +364,7 @@ function refreshBridge(ctx: any): void {
 			context: typeof usage?.percent === "number" ? `${Math.round(usage.percent)}%` : undefined,
 			cwd: process.cwd(),
 			mirror: mirrorEnabled ? mirrorFile() : "off",
-			lastDiagram: loadState().lastDiagram,
+			lastDiagram: persisted.lastDiagram,
 			lastShell: lastShell ? new Date(lastShell.at).toISOString().slice(11, 19) : undefined,
 			browserTabs: [...browserTabs],
 			toc: [...mirrorToc],
@@ -377,6 +381,9 @@ function refreshBridge(ctx: any): void {
 			})),
 			chart: lastChart,
 		};
+		const fingerprint = JSON.stringify(data);
+		if (fingerprint === lastDashboardFingerprint) return;
+		lastDashboardFingerprint = fingerprint;
 		writeDashboard(buildDashboard(data));
 		writeDashboardJson(data);
 	} catch {
@@ -501,7 +508,10 @@ function publishFileStrip(refs: FileRef[]): void {
 function publishMarkdownTranscript(text: string): void {
 	if (process.env.PI_TERN_MD_TRANSCRIPT !== "1") return;
 	const sink = (globalThis as {
-		__piTernNative?: { appendMarkdown?: (input: unknown) => unknown; transcript?: (mode: string) => unknown };
+		__piTernNative?: {
+			appendMarkdown?: (input: unknown) => unknown;
+			transcript?: (mode: string) => unknown;
+		};
 	}).__piTernNative;
 	if (!sink?.appendMarkdown) return;
 	if (!mdTranscriptAnnounced) {
@@ -515,7 +525,7 @@ function publishMarkdownTranscript(text: string): void {
 	const linked = linkifyFileRefs(text, parseFileRefs(text, { cwd: process.cwd(), limit: 40 }));
 	mdTranscriptSeq += 1;
 	try {
-		sink.appendMarkdown({ id: `tm${mdTranscriptSeq}`, text: linked.slice(0, 20000) });
+		sink.appendMarkdown({ id: `tm${mdTranscriptSeq}`, text: linked.slice(0, 20000), transcript: true });
 	} catch {
 		/* the transcript must never break */
 	}
@@ -564,8 +574,35 @@ async function previewInAside(ref: FileRef): Promise<{ ok: boolean; reason?: str
 	const sink = (globalThis as { __piTernNative?: { aside?: (input: unknown) => unknown } }).__piTernNative;
 	if (!sink?.aside) return { ok: false, reason: "native mode is not active" };
 	if (!ref.abs || !ref.exists) return { ok: false, reason: `not a readable file: ${ref.raw}` };
-	const body = readFileSync(ref.abs, "utf8");
-	const clipped = body.length > 12000 ? `${body.slice(0, 12000)}\n\n… (${body.length - 12000} more characters)` : body;
+	if (ref.kind === "image" || ref.kind === "pdf") {
+		// An aside is a markdown node; a binary would only produce mojibake.
+		return { ok: false, reason: `${ref.kind} files are not markdown — use preview or open instead` };
+	}
+	let stat: { size: number };
+	try {
+		stat = statSync(ref.abs);
+	} catch (error) {
+		return { ok: false, reason: `could not stat ${ref.raw}: ${error instanceof Error ? error.message : String(error)}` };
+	}
+	const CAP = 128 * 1024;
+	let body: string;
+	try {
+		// Bounded read: a huge file must not be pulled in whole to render a preview.
+		const handle = openSync(ref.abs, "r");
+		try {
+			const buffer = Buffer.alloc(Math.min(CAP, Math.max(1, stat.size)));
+			const read = readSync(handle, buffer, 0, buffer.length, 0);
+			body = buffer.subarray(0, read).toString("utf8");
+		} finally {
+			closeSync(handle);
+		}
+	} catch (error) {
+		return { ok: false, reason: `could not read ${ref.raw}: ${error instanceof Error ? error.message : String(error)}` };
+	}
+	const clipped =
+		stat.size > CAP
+			? `${body}\n\n… (showing the first ${Math.round(CAP / 1024)} KB of ${Math.round(stat.size / 1024)} KB)`
+			: body;
 	const result = sink.aside({ markdown: clipped, title: ref.raw, link: ref.url }) as
 		| { ok?: boolean; reason?: string }
 		| undefined;
@@ -1951,7 +1988,7 @@ export default function piTern(pi: ExtensionAPI) {
 
 	pi.registerCommand("tern", {
 		description:
-			"Tern integration: status | capabilities | db | doc | board | run | ask | schedule | bridge | mirror | diagram | chart | browser | fleet | pr | worktree | settings",
+			"Tern integration: status | capabilities | files | browser | run | mirror | diagram | diagnose | restore | native | bridge (see /tern <sub> --help via the tools; chart, fleet, pr and worktree are tools, not subcommands)",
 		handler: async (args: string, ctx: any) => {
 			const trimmed = (args ?? "").trim();
 			const [sub = "status"] = trimmed.split(/\s+/);

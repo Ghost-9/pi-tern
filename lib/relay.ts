@@ -236,12 +236,21 @@ export async function relayBrowser(
 export async function relayPing(socketPath: string, timeoutMs = 5000): Promise<{ ok: boolean; ms: number; error?: string }> {
 	const started = Date.now();
 	const client = new RelayClient(socketPath);
+	let failure: string | undefined;
 	try {
-		await client.request({ op: "state", block: 0 }, timeoutMs).catch(() => undefined);
-		return { ok: true, ms: Date.now() - started };
+		// The ping used to swallow the error and always report ok, so `/tern diagnose` claimed a
+		// healthy relay with PI_TERN_RELAY=0 or a dead socket.
+		await client.request({ op: "state", block: 0 }, timeoutMs).then(
+			() => undefined,
+			(error: unknown) => {
+				failure = error instanceof Error ? error.message : String(error);
+			},
+		);
 	} catch (error) {
-		return { ok: false, ms: Date.now() - started, error: error instanceof Error ? error.message : String(error) };
+		failure = error instanceof Error ? error.message : String(error);
 	} finally {
 		client.close();
 	}
+	const ms = Date.now() - started;
+	return failure ? { ok: false, ms, error: failure } : { ok: true, ms };
 }

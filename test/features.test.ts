@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { detectRasterizer, niceMax, renderChartSvg } from "../lib/figure.ts";
 import { buildManifest, renderManifest, type Manifest } from "../lib/manifest.ts";
-import { prVerdict, type PrSummary } from "../lib/pr.ts";
+import { prVerdict, safeSelector, type PrSummary } from "../lib/pr.ts";
 import { defaultWorktreePath } from "../lib/worktree.ts";
 
 const data = [
@@ -105,6 +105,31 @@ test("prVerdict summarises checks, review and mergeability", () => {
 	);
 	assert.equal(prVerdict({ ...base, isDraft: true, reviewDecision: "REVIEW_REQUIRED" }), "draft · open · review required · checks green · mergeable");
 	assert.equal(prVerdict({ checks: { total: 0, passing: 0, failing: 0, pending: 0, failingNames: [], pendingNames: [] } }), "no signal");
+	// A queued status is not a failure: PENDING was in the failing set and produced "1 failing check".
+	assert.equal(
+		prVerdict({ ...base, checks: { total: 2, passing: 1, failing: 0, pending: 1, failingNames: [], pendingNames: ["ci"] } }),
+		"open · mergeable",
+	);
+});
+
+test("pr selectors are validated before they reach a shell", () => {
+	// prWatch builds `gh pr checks <selector> --watch` and runs it under `sh -lc`.
+	assert.equal(safeSelector(undefined), "");
+	assert.equal(safeSelector("  "), "");
+	assert.equal(safeSelector("123"), "'123'");
+	assert.equal(safeSelector("feature/ui"), "'feature/ui'");
+	assert.equal(safeSelector("https://github.com/o/r/pull/7"), "'https://github.com/o/r/pull/7'");
+	for (const hostile of [
+		"7; rm -rf /",
+		"7 && curl evil.test",
+		"7 | tee /tmp/x",
+		"$(whoami)",
+		"`id`",
+		"7\ninjected",
+		"a'b",
+	]) {
+		assert.throws(() => safeSelector(hostile), /unsafe PR selector/, `should reject ${JSON.stringify(hostile)}`);
+	}
 });
 
 test("worktree default path is a sibling keyed by branch", () => {
@@ -123,12 +148,36 @@ const environment = (overrides: Partial<Manifest["environment"]> = {}): Manifest
 	windowSocket: false,
 	paneSocket: false,
 	gh: { available: true, authenticated: true },
+	bridge: { installed: true, upToDate: true, version: "1.1.2" },
 	rasterizer: "rsvg-convert",
 	native: null,
 	...overrides,
 });
 
 const input = { version: "1.1.0", directTools: ["tern_status"], deferredTools: ["tern_chart"], probe: { status: "confirmed", hello: null } };
+
+test("manifest gates the data plane on the bridge plugin, not on the Tern CLI", () => {
+	// The plugin serves the data plane; "the CLI answered" was not evidence that it was installed.
+	const withoutBridge = buildManifest(
+		input,
+		environment({ bridge: { installed: false, upToDate: false }, ternCli: true }),
+	);
+	const byId = new Map(withoutBridge.capabilities.map((item) => [item.id, item]));
+	assert.equal(byId.get("data.sqlite")?.available, false);
+	assert.match(String(byId.get("data.sqlite")?.reason), /not installed/);
+	assert.equal(byId.get("diagram.mermaid")?.available, true, "the CLI still works without the plugin");
+
+	const stale = buildManifest(
+		input,
+		environment({ bridge: { installed: true, upToDate: false, version: "0.9.0" } }),
+	);
+	const staleById = new Map(stale.capabilities.map((item) => [item.id, item]));
+	assert.equal(staleById.get("data.boards")?.available, false);
+	assert.match(String(staleById.get("data.boards")?.reason), /0\.9\.0/);
+
+	const ready = buildManifest(input, environment());
+	assert.equal(ready.capabilities.find((item) => item.id === "data.sqlite")?.available, true);
+});
 
 test("manifest reports availability and reasons", () => {
 	const manifest = buildManifest(input, environment());

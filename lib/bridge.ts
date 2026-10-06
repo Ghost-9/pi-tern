@@ -144,7 +144,9 @@ async function pluginList(): Promise<Array<{ id?: string; status?: string; probl
 	const result = await runTern(["plugin", "list", "--json"], 20000);
 	if (result.code !== 0) throw new Error(result.stderr.trim() || `tern plugin list exited ${result.code}`);
 	try {
-		const parsed = JSON.parse(result.stdout) as { plugins?: Array<{ id?: string; status?: string; problems?: unknown[]; version?: string }> };
+		const parsed = JSON.parse(result.stdout) as {
+			plugins?: Array<{ id?: string; status?: string; problems?: unknown[]; version?: string }>;
+		};
 		return parsed.plugins ?? [];
 	} catch {
 		return [];
@@ -174,16 +176,22 @@ export async function bridgeStatus(): Promise<{ installed: boolean; version?: st
  * One-install promise: pi-tern alone is enough. On first session start inside Tern the
  * bridge plugin is linked automatically; later starts only refresh its files.
  */
-export async function ensureBridge(): Promise<{ installed: boolean; dir: string }> {
+export async function ensureBridge(): Promise<{ installed: boolean; dir: string; upToDate: boolean }> {
 	try {
-		const plugins = await pluginList();
-		if (plugins.some((plugin) => plugin.id === "pi-bridge")) {
-			installBridgeFiles();
-			return { installed: false, dir: bridgeDir() };
+		const status = await bridgeStatus();
+		if (status.installed) {
+			// Only rewrite when the shipped Luau actually differs. A window plugin is compiled at
+			// window start, so a stale copy silently keeps running old code — hence the version check
+			// rather than a blind reinstall on every session start.
+			if (!status.upToDate) {
+				installBridgeFiles();
+				await runTern(["plugin", "reload"], 30000);
+			}
+			return { installed: false, dir: bridgeDir(), upToDate: status.upToDate };
 		}
 	} catch {
 		/* fall through to install */
 	}
 	const result = await linkBridge();
-	return { installed: true, dir: result.dir };
+	return { installed: true, dir: result.dir, upToDate: true };
 }

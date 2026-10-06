@@ -53,6 +53,8 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 	let asideAdded = false;
 	let transcriptMode = "rows";
 	let transcriptMdSeq = 0;
+	/** Ids of md nodes appended as transcripts, oldest first, for bounded growth. */
+	let transcriptNodes = [];
 	const asideNodes = new Set();
 	const markdownNodes = new Map();
 
@@ -65,6 +67,21 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 		opened = true;
 		surface = surfaceId || `pi${Date.now().toString(36)}`;
 		send("o", { id: surface, mode: "inline", title, role, listen: false, ...(adopt ? { adopt: true } : {}) });
+	};
+	/**
+	 * Make sure the transcript region exists before anything is added to it.
+	 *
+	 * Tern rejects a child whose parent id it has not seen — `unknown id main` — and those errors
+	 * sit on stdin unread, which is how M1 rendered nothing for three milestones. Any method that
+	 * adds to `main` must therefore create it first instead of assuming a flush happened.
+	 */
+	const ensureMainOps = (ops, lines = []) => {
+		if (mainAdded) return false;
+		const seed = transcriptMode === "md" ? [] : [{ id: "m", k: "rows", p: { cols, lines } }];
+		ops.push(["add", "main", surface, null, { id: "main", k: "col", c: seed }]);
+		mainAdded = true;
+		rowsAdded = transcriptMode !== "md";
+		return true;
 	};
 	const schedule = () => {
 		if (flushTimer !== null) return;
@@ -172,6 +189,7 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 						rowsAdded = false;
 						figures = [];
 						markdownNodes.clear();
+						transcriptNodes = [];
 					}
 					if (msg.includes("unknown id aside")) {
 						asideAdded = false;
@@ -215,6 +233,7 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 				figures: figures.length,
 				markdownNodes: markdownNodes.size,
 				transcriptMode,
+				transcriptNodes: transcriptNodes.length,
 				aside: asideAdded,
 				lastError,
 			};
@@ -238,7 +257,7 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 			if (process.env.PI_TERN_INLINE_IMAGES !== "1") {
 				return { ok: false, reason: "inline images are opt-in: set PI_TERN_INLINE_IMAGES=1" };
 			}
-			if (!features.includes("image") && (process.env.PI_TERN_FORCE !== "1" && !(hello?.kinds ?? []).includes("image"))) {
+			if (!(hello?.kinds ?? []).includes("image") && process.env.PI_TERN_FORCE !== "1") {
 				return { ok: false, reason: "Tern does not advertise an `image` node kind" };
 			}
 			if (typeof data !== "string" || data.length === 0) return { ok: false, reason: "no image data" };
@@ -247,7 +266,9 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 			const id = `fig${figureSeq}`;
 			const props = { data, mime };
 			if (caption) props.caption = String(caption);
-			const ops = [["add", id, "main", null, { id, k: "image", p: props }]];
+			const ops = [];
+			ensureMainOps(ops);
+			ops.push(["add", id, "main", null, { id, k: "image", p: props }]);
 			figures.push(id);
 			const keep = Math.max(1, Number(process.env.PI_TERN_INLINE_KEEP) || 3);
 			while (figures.length > keep) ops.push(["del", figures.shift()]);
@@ -269,9 +290,10 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 			const props = { text };
 			if (caption) props.caption = String(caption);
 			const known = markdownNodes.get(id);
-			const ops = known
-				? [["set", id, props]]
-				: [["add", id, "main", null, { id, k: "md", p: props }]];
+			const ops = [];
+			ensureMainOps(ops);
+			if (known) ops.push(["set", id, props]);
+			else ops.push(["add", id, "main", null, { id, k: "md", p: props }]);
 			markdownNodes.set(id, true);
 			seq += 1;
 			send("f", { sf: surface, s: seq, ops });
@@ -324,12 +346,15 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 		transcript(mode) {
 			if (mode !== "md" && mode !== "rows") return { ok: false, reason: "mode must be md or rows" };
 			transcriptMode = mode;
+			// A switch must repaint even when the screen has not changed, or the rows linger until
+			// the next output arrives.
+			lastLines = "";
 			dirty = true;
 			schedule();
 			return { ok: true, mode };
 		},
-		/** Append one markdown block to the transcript (used by md-transcript mode and the file strip). */
-		appendMarkdown({ text, id, caption } = {}) {
+		/** Append one markdown block to the transcript (md-transcript mode and the file strip). */
+		appendMarkdown({ text, id, caption, transcript = false } = {}) {
 			if (typeof text !== "string" || text.length === 0) return { ok: false, reason: "no markdown text" };
 			open();
 			transcriptMdSeq += 1;
@@ -337,13 +362,25 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 			const props = { text };
 			if (caption) props.caption = String(caption);
 			const known = markdownNodes.get(nodeId);
-			const ops = known
-				? [["set", nodeId, props]]
-				: [["add", nodeId, "main", null, { id: nodeId, k: "md", p: props }]];
+			const ops = [];
+			ensureMainOps(ops);
+			if (known) ops.push(["set", nodeId, props]);
+			else ops.push(["add", nodeId, "main", null, { id: nodeId, k: "md", p: props }]);
 			markdownNodes.set(nodeId, true);
+			// Long sessions must not grow the surface without bound: keep the newest few transcript
+			// blocks and delete the rest. The strip and named nodes are updated in place instead.
+			if (transcript && !known) {
+				transcriptNodes.push(nodeId);
+				const keep = Math.max(2, Number(process.env.PI_TERN_MD_TRANSCRIPT_KEEP) || 20);
+				while (transcriptNodes.length > keep) {
+					const dropped = transcriptNodes.shift();
+					markdownNodes.delete(dropped);
+					ops.push(["del", dropped]);
+				}
+			}
 			seq += 1;
 			send("f", { sf: surface, s: seq, ops });
-			return { ok: true, id: nodeId, chars: text.length, updated: Boolean(known) };
+			return { ok: true, id: nodeId, chars: text.length, updated: Boolean(known), kept: transcriptNodes.length };
 		},
 		/**
 		 * A native bar chart.
@@ -361,9 +398,10 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 			const props = { kind: "bars", bars: series };
 			if (title) props.title = String(title);
 			const known = markdownNodes.get(id);
-			const ops = known
-				? [["set", id, props]]
-				: [["add", id, "main", null, { id, k: "chart", p: props }]];
+			const ops = [];
+			ensureMainOps(ops);
+			if (known) ops.push(["set", id, props]);
+			else ops.push(["add", id, "main", null, { id, k: "chart", p: props }]);
 			markdownNodes.set(id, true);
 			seq += 1;
 			send("f", { sf: surface, s: seq, ops });
@@ -400,7 +438,11 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 				if (start === -1) break;
 				const end = rest.indexOf("\x1b\\", start);
 				if (end === -1) {
-					inputBuffer = rest.slice(start);
+					// An unterminated frame: hold it until the rest arrives — but a stray prefix must not
+					// swallow keystrokes forever, so past a sane bound give the bytes back to pi instead.
+					const pending = rest.slice(start);
+					if (pending.length > 8192) return out + rest.slice(0, start) + pending;
+					inputBuffer = pending;
 					rest = "";
 					break;
 				}
@@ -425,7 +467,10 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 			screen.write(data);
 			dirty = true;
 			// Coalesce frames: Tern should not be asked to redraw faster than 10 fps.
-			if (data.includes("\x1b[?2026l") && flushTimer === null) {
+			// Repaint on any change, not only inside a synchronized-output frame: a clear on resize or a
+			// startup write updates the grid but carries no `?2026l`, which left the surface visibly stale.
+			// The 100 ms debounce below is what keeps this from flooding Tern.
+			if (flushTimer === null) {
 				flushTimer = setTimeout(() => {
 					flushTimer = null;
 					if (dirty) sink.flush();
@@ -451,19 +496,15 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 			const ops = [];
 			// Regions are root nodes added under the surface id; `main`/`dock` are their node ids.
 			// In md-transcript mode the rows node is removed once and the transcript is markdown only.
-			const mainNode = { id: "m", k: "rows", p: { cols, lines: main } };
-			if (!mainAdded) {
-				ops.push(["add", "main", surface, null, { id: "main", k: "col", c: transcriptMode === "md" ? [] : [mainNode] }]);
-				mainAdded = true;
-				rowsAdded = transcriptMode !== "md";
-			} else if (transcriptMode === "md") {
-				if (rowsAdded) {
-					ops.push(["del", "m"]);
-					rowsAdded = false;
-				}
-			} else {
-				if (!rowsAdded) {
-					ops.push(["add", "m", "main", null, mainNode]);
+			const created = ensureMainOps(ops, main);
+			if (!created) {
+				if (transcriptMode === "md") {
+					if (rowsAdded) {
+						ops.push(["del", "m"]);
+						rowsAdded = false;
+					}
+				} else if (!rowsAdded) {
+					ops.push(["add", "m", "main", null, { id: "m", k: "rows", p: { cols, lines: main } }]);
 					rowsAdded = true;
 				} else {
 					ops.push(["set", "m", { cols, lines: main }]);

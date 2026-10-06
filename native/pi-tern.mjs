@@ -7,6 +7,7 @@
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { encodeHello, extractMessages, isHelloReply } from "./tsp.mjs";
 
 const installRoot = process.env.PI_MANAGED_INSTALL_ROOT || path.join(process.env.HOME ?? "", ".pi", "agent", "install");
@@ -93,7 +94,7 @@ function probe(timeoutMs = 700) {
 }
 
 const release = resolveRelease();
-const hook = path.join(path.dirname(new URL(import.meta.url).pathname), "register-hook.mjs");
+const hook = fileURLToPath(new URL("./register-hook.mjs", import.meta.url));
 if (!release || !existsSync(release.entry) || !existsSync(hook)) {
 	runStock(process.argv.slice(2));
 } else {

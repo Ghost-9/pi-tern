@@ -104,7 +104,12 @@ try {
 	record("fleet: read", waited.output.includes("PI_TERN_FLEET_OK"), "output captured");
 	const status = await fleetStatus();
 	record("fleet: status", status.some((member) => member.block === spawned.block), `${status.length} members`);
-	record("fleet: stop", true, await fleetStop(spawned.block));
+	try {
+		await fleetStop(spawned.block);
+		record("fleet: stop", true, "stop returned");
+	} catch (error) {
+		record("fleet: stop", false, String(error));
+	}
 } catch (error) {
 	record("fleet: spawn/wait/read/stop", false, String(error));
 }
@@ -129,7 +134,7 @@ try {
 try {
 	const environment = await gatherEnvironment(env);
 	const manifest = buildManifest(
-		{ version: "1.1.1", directTools: ["tern_status", "tern_run", "tern_browser"], deferredTools: [], probe: { status: "idle", hello: null } },
+		{ version: "1.1.3", directTools: ["tern_status", "tern_run", "tern_browser"], deferredTools: [], probe: { status: "idle", hello: null } },
 		environment,
 	);
 	const available = manifest.capabilities.filter((item) => item.available);

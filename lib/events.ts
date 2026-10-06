@@ -47,6 +47,8 @@ export class TernEventStream {
 		this.child = child;
 		child.stdout?.setEncoding("utf8");
 		child.stdout?.on("data", (chunk: string) => this.feed(chunk));
+		// Drain stderr: an unread pipe fills at 64 KB and stalls the child until the timeout.
+		child.stderr?.resume();
 		child.on("error", (error) => {
 			this.lastError = error as Error;
 			this.child = undefined;

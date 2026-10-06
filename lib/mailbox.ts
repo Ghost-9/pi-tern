@@ -6,17 +6,38 @@
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { bridgeDir } from "./bridge.ts";
+import { BRIDGE_PLUGIN_TOML } from "./bridge-plugin.ts";
 import { readTernEnv } from "./tern.ts";
 
-/** Fail fast outside Tern instead of waiting for a mailbox timeout. */
+/**
+ * Fail fast outside Tern instead of waiting for a mailbox timeout.
+ *
+ * The plugin lives in a Tern *window*, so a pane is not required — pi may be a T3-hosted or
+ * headless agent and the window still answers. `PI_TERN_MAILBOX_PANE_ONLY=1` restores the old
+ * pane-only behaviour for anyone who wants it.
+ */
 function assertTernReady(): void {
 	if (process.env.PI_TERN_FORCE === "1") return;
-	if (!readTernEnv().inTern) {
-		throw new Error("tern tools need a Tern pane (TERM_PROGRAM=tern); set PI_TERN_FORCE=1 to override");
+	const env = readTernEnv();
+	if (process.env.PI_TERN_MAILBOX_PANE_ONLY === "1" && !env.inTern) {
+		throw new Error("tern tools need a Tern pane (PI_TERN_MAILBOX_PANE_ONLY=1); set PI_TERN_FORCE=1 to override");
+	}
+	if (!env.inTern && !env.paneSocket) {
+		throw new Error(
+			"tern tools need a running Tern (no pane socket in this environment); " +
+				"start Tern, or set PI_TERN_FORCE=1 to try anyway",
+		);
 	}
 }
 
-export const EXPECTED_PLUGIN_VERSION = "0.9.0";
+/**
+ * The plugin version this extension speaks to, taken from the plugin source it ships.
+ *
+ * These were two hand-maintained constants, and they drifted: the plugin moved to 1.1.2 while
+ * the guard still expected 0.9.0, which made every data-plane call reject a correct reply. One
+ * source of truth, asserted by test/bridge-luau.test.ts.
+ */
+export const EXPECTED_PLUGIN_VERSION = BRIDGE_PLUGIN_TOML.match(/version = "([^"]+)"/)?.[1] ?? "0.0.0";
 
 export interface MailboxResult {
 	ok: boolean;
