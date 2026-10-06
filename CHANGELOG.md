@@ -1,6 +1,23 @@
 # Changelog
 
-## Unreleased — v1.0.0 M1
+## 1.0.0 — 2026-10-06
+
+Native mode, complete: launcher + loader hook, native rows surface, dock split, native composer.
+
+- **M1** `native/` launcher (Tern probe, stock fallback) + loader hook over pi-tui.
+- **M2** dock split: transcript rows in `main`, composer/status pinned in `dock`.
+- **M3** native composer: pi-tui `Editor` captured and published as a TSP `editor` node
+  (`sendable`), with Tern's `edit` / `undo` / `send` events driving pi's own composer API;
+  `["suspend"]` / `["resume"]` ops; opt-in surface `adopt` (`PI_TERN_ADOPT=1`).
+- **Fix** every frame had been rejected since M1 (`unknown id main/dock`): Tern requires the
+  region roots to be added **under the surface id** (`["add","main","<surface>",null,{"id":"main",
+  k:"col",…}]`), not addressed as parents. Corrected; zero error events on 0.5.0.
+- **Compatibility** 7/7 non-Tern modes (version, print, json, rpc, launcher fallbacks, no TSP
+  traffic); launcher refuses native mode for non-interactive flags; extension fails fast outside Tern.
+- **Measured**: 0 ANSI writes, 1.43 s to first frame, 0 idle frames, 238 MB RSS, mailbox median
+  186 ms (idle poll), 31/31 tests, 79.94 % coverage.
+- Findings, corrections and Tern 0.5.0 opportunities: `docs/NATIVE-FINDINGS.md`.
+
 
 - **Native mode (rows fallback)**: `native/` launcher + probe, loader hook patching
   `ProcessTerminal.write`, ANSI grid to TSP `rows` frames, stock-pi fallback, 100 ms frame

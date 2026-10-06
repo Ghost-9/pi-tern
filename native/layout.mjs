@@ -5,11 +5,14 @@
  */
 const RULE = /^[\s\u2500\u2501-]*[\u2500\u2501-]{8,}/;
 
-/** Returns the index of the composer's top border, or -1 when not found. */
+function isRule(line) {
+	return RULE.test(line.replace(/\x1b\[[0-9;]*m/g, ""));
+}
+
+/** Returns the index of the composer's lowest rule, or -1 when not found. */
 export function findDockStart(lines) {
 	for (let row = lines.length - 1; row >= Math.max(0, lines.length - 12); row -= 1) {
-		const text = lines[row].replace(/\x1b\[[0-9;]*m/g, "");
-		if (RULE.test(text)) return row;
+		if (isRule(lines[row])) return row;
 	}
 	return -1;
 }
@@ -19,4 +22,28 @@ export function splitDock(lines) {
 	const start = findDockStart(lines);
 	if (start <= 0) return { main: lines, dock: [] };
 	return { main: lines.slice(0, start), dock: lines.slice(start) };
+}
+
+/**
+ * Split the screen into transcript / composer / status by the composer's two
+ * rules. Returns null when the composer box cannot be identified.
+ */
+export function splitComposer(lines) {
+	let close = -1;
+	for (let row = lines.length - 1; row >= Math.max(0, lines.length - 14); row -= 1) {
+		if (isRule(lines[row])) {
+			close = row;
+			break;
+		}
+	}
+	if (close <= 0) return null;
+	let open = -1;
+	for (let row = close - 1; row >= Math.max(0, close - 14); row -= 1) {
+		if (isRule(lines[row])) {
+			open = row;
+			break;
+		}
+	}
+	if (open < 0) return null;
+	return { main: lines.slice(0, open), composer: lines.slice(open + 1, close), status: lines.slice(close + 1) };
 }

@@ -46,7 +46,7 @@ import { insideMultiplexer, readTernEnv, runTern, scratchDir, type TernEnv } fro
 import { cleanShellBlock, extractMermaids, extractShellBlocks, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
 import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, normalizeOsc877, type TspHello } from "./lib/tsp.ts";
 
-const PI_TERN_VERSION = "0.9.1";
+const PI_TERN_VERSION = "1.0.0";
 
 interface ProbeState {
 	status: "idle" | "pending" | "confirmed" | "absent" | "timeout" | "skipped";
@@ -456,6 +456,7 @@ export default function piTern(pi: ExtensionAPI) {
 						probe: { status: probe.status, hello: probe.hello },
 						lastMermaid: lastMermaid ? { chars: lastMermaid.source.length, at: lastMermaid.at } : null,
 						mirror: { enabled: mirrorEnabled, path: mirrorFile() },
+						native: (globalThis as any).__piTernNative?.state?.() ?? null,
 					},
 					null,
 					2,
@@ -1279,6 +1280,18 @@ export default function piTern(pi: ExtensionAPI) {
 					case "status":
 					case "doctor": {
 						ctx.ui.notify(describeProbe(), "info");
+						return;
+					}
+					case "native": {
+						const native = (globalThis as any).__piTernNative;
+						if (!native) {
+							ctx.ui.notify("native mode is not active (start pi through pi-tern inside Tern)", "warn");
+							return;
+						}
+						const action = trimmed.split(/\s+/)[1] ?? "status";
+						if (action === "suspend") ctx.ui.notify(`native surface suspend: ${native.suspend()}`, "info");
+						else if (action === "resume") ctx.ui.notify(`native surface resume: ${native.resume()}`, "info");
+						else ctx.ui.notify(JSON.stringify(native.state(), null, 2), "info");
 						return;
 					}
 					case "diagnose": {

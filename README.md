@@ -211,3 +211,5 @@ The extension itself has no runtime dependencies: Node builtins, pi's APIs and T
 ## License
 
 [MIT](LICENSE) © 2026 Mayank Batra
+
+**Native mode (v1.0.0):** run `pi-tern` instead of `pi` inside Tern for a native surface — transcript rows in `main`, a real TSP `editor` composer (Tern edit/undo/send drive pi), suspend/resume, opt-in surface adopt. Outside Tern or in `-p`/`--mode json|rpc`, it runs stock pi. See [`docs/NATIVE-FINDINGS.md`](docs/NATIVE-FINDINGS.md).

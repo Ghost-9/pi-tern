@@ -5,7 +5,7 @@
  * launcher whenever anything is missing or Tern does not answer.
  */
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { encodeHello, extractMessages, isHelloReply } from "./tsp.mjs";
 
@@ -98,12 +98,24 @@ if (!release || !existsSync(release.entry) || !existsSync(hook)) {
 	runStock(process.argv.slice(2));
 } else {
 	const hello = nativeEligible(process.argv.slice(2)) ? await probe() : null;
+	if (process.env.PI_TERN_TSP_RECORD && hello) {
+		try {
+			appendFileSync(process.env.PI_TERN_TSP_RECORD, `${JSON.stringify({ t: Date.now(), dir: "in", verb: "r", body: hello })}\n`);
+		} catch {
+			/* best effort */
+		}
+	}
 	if (!hello) {
 		runStock(process.argv.slice(2));
 	} else {
-		const child = spawn(process.execPath, ["--import", hook, release.entry, ...process.argv.slice(2)], {
+		const child = spawn(process.execPath, ["--disable-warning=DEP0205", "--import", hook, release.entry, ...process.argv.slice(2)], {
 			stdio: "inherit",
-			env: { ...process.env, PI_TERN_NATIVE: "1", PI_TERN_HELLO: JSON.stringify(hello) },
+			env: {
+				...process.env,
+				PI_TERN_NATIVE: "1",
+				PI_TERN_HELLO: JSON.stringify(hello),
+				...(process.env.TERN_PANE ? { PI_TERN_SURFACE_ID: `pi-${process.env.TERN_PANE}` } : {}),
+			},
 		});
 		child.on("exit", (code, signal) => {
 			if (signal) process.kill(process.pid, signal);
