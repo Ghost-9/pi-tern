@@ -15,6 +15,7 @@ import path from "node:path";
 import { openFileBlock, renderChartSvg, renderFigure } from "../lib/figure.ts";
 import { fleetRead, fleetSpawn, fleetStatus, fleetStop, fleetWait } from "../lib/fleet.ts";
 import { buildManifest, gatherEnvironment } from "../lib/manifest.ts";
+import { PLUGIN_VERSION } from "../lib/version.ts";
 import { ghStatus, prSummary, prVerdict } from "../lib/pr.ts";
 import { readTernEnv, requireTernCli, scratchDir } from "../lib/tern.ts";
 import { defaultWorktreePath, repoRoot, worktreeList } from "../lib/worktree.ts";
@@ -134,7 +135,7 @@ try {
 try {
 	const environment = await gatherEnvironment(env);
 	const manifest = buildManifest(
-		{ version: "1.1.7", directTools: ["tern_status", "tern_run", "tern_browser"], deferredTools: [], probe: { status: "idle", hello: null } },
+		{ version: PLUGIN_VERSION, directTools: ["tern_status", "tern_run", "tern_browser"], deferredTools: [], probe: { status: "idle", hello: null } },
 		environment,
 	);
 	const available = manifest.capabilities.filter((item) => item.available);

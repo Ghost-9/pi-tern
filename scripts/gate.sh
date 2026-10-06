@@ -26,6 +26,8 @@ UNIT_TESTS=(
 	test/features.test.ts
 	test/refs.test.ts
 	test/bridge-luau.test.ts
+	test/agent-setup.test.ts
+	test/version.test.ts
 	test/native-sink.test.ts
 )
 

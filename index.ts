@@ -53,8 +53,12 @@ import { loadState, saveState } from "./lib/state.ts";
 import { insideMultiplexer, readTernEnv, requireTernCli, runTern, scratchDir, setTernAgentDefaults, ternSettingsPath, type TernEnv } from "./lib/tern.ts";
 import { describeRefs, linkifyFileRefs, parseFileRefs, type FileRef } from "./lib/refs.ts";import { cleanShellBlock, extractMermaids, extractShellBlocks, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
 import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, normalizeOsc877, type TspHello } from "./lib/tsp.ts";
+import { PLUGIN_VERSION } from "./lib/version.ts";
 
-const PI_TERN_VERSION = "1.1.7";
+// Derived from package.json. A hand-maintained copy of this number is what caused the 1.1.3 P0,
+// where the extension advertised one version and the plugin answered with another and every
+// data-plane call rejected the reply as stale.
+const PI_TERN_VERSION = PLUGIN_VERSION;
 
 /** The only tools declared to the model; everything else is `deferred` (no schema, no listing). */
 const DIRECT_TOOLS = new Set(["tern_status", "tern_run", "tern_browser"]);
@@ -2151,15 +2155,20 @@ export default function piTern(pi: ExtensionAPI) {
 						const launcher = process.env.PI_TERN_LAUNCHER || process.argv[1] || "pi-tern";
 						try {
 							const result = setTernAgentDefaults(launcher);
+							// A missing backup is the normal case on a fresh install, where there was no file to
+							// back up — so it must not print "Backup: null".
+							const backupLine = result.backup ? `\n\nBackup: ${result.backup}` : "";
 							ctx.ui.notify(
 								result.changed.length > 0
-									? `Tern settings updated (${result.file}):\n${result.changed.join("\n")}\n\nBackup: ${result.backup}\nOpen a new tab — it will be an agent block running pi-tern, with native surfaces.`
+									? `Tern settings updated (${result.file}):\n${result.changed.join("\n")}${backupLine}\n\nOpen a new tab — it will be an agent block running pi-tern, with native surfaces.`
 									: `Already set up: new blocks are agent blocks running ${launcher}. Open a new tab to get native surfaces.`,
 								"info",
 							);
 						} catch (error) {
+							// This is the path a user hits when their settings.json is corrupt, so it has to name
+							// the file and both keys rather than just say it failed.
 							ctx.ui.notify(
-								`could not update Tern settings: ${error instanceof Error ? error.message : String(error)}. ` +
+								`could not update Tern settings: ${error instanceof Error ? error.message : String(error)}\n\n` +
 									`Set these two by hand in ${ternSettingsPath()}: "new_blocks": "Agent", "agent_command": ${JSON.stringify(launcher)}`,
 								"warning",
 							);

@@ -80,9 +80,46 @@ export function ternSettingsPath(): string {
 	return path.join(os.homedir(), "Library", "Application Support", "Tern", "settings.json");
 }
 
-export function readTernSettings(): Record<string, unknown> {
+/**
+ * Where the settings file lives. Every path helper takes this so tests can point at a temp file:
+ * this is the one function in pi-tern that writes outside its own sandbox, so it must never be
+ * the reason a test run touches a real Tern install.
+ */
+export interface TernSettingsIo {
+	/** Absolute path to settings.json. */
+	file: string;
+	/** Read the current contents, or `null` when the file does not exist yet. */
+	read(): string | null;
+	/** Overwrite the file. */
+	write(contents: string): void;
+}
+
+/** The real one: Tern's settings.json under Application Support. */
+export function defaultTernSettingsIo(): TernSettingsIo {
+	const file = ternSettingsPath();
+	return {
+		file,
+		read: () => {
+			try {
+				return readFileSync(file, "utf8");
+			} catch {
+				// ENOENT is the normal case on a fresh Tern install, and it must not throw here:
+				// /tern agent-setup is exactly the command someone runs to fix a broken setup.
+				return null;
+			}
+		},
+		write: (contents: string) => {
+			mkdirSync(path.dirname(file), { recursive: true });
+			writeFileSync(file, contents, "utf8");
+		},
+	};
+}
+
+export function readTernSettings(io: TernSettingsIo = defaultTernSettingsIo()): Record<string, unknown> {
 	try {
-		return JSON.parse(readFileSync(ternSettingsPath(), "utf8")) as Record<string, unknown>;
+		const raw = io.read();
+		if (raw === null) return {};
+		return JSON.parse(raw) as Record<string, unknown>;
 	} catch {
 		return {};
 	}
@@ -91,13 +128,29 @@ export function readTernSettings(): Record<string, unknown> {
 /**
  * Make pi-tern the agent Tern starts, so new tabs are agent blocks and native surfaces display.
  * Backs the file up first and reports exactly what changed; Tern reloads on save, so no restart.
+ *
+ * `alreadySet` comes back true when both keys were already correct, which is the "do not rewrite a
+ * file that needs no change" case — it must not produce a backup either.
  */
-export function setTernAgentDefaults(agentCommand: string): { file: string; backup: string; changed: string[] } {
-	const file = ternSettingsPath();
-	const before = readFileSync(file, "utf8");
-	const current = JSON.parse(before) as Record<string, unknown>;
-	const backup = `${file}.bak-${new Date().toISOString().replace(/[:.]/g, "-")}`;
-	writeFileSync(backup, before, "utf8");
+export function setTernAgentDefaults(
+	agentCommand: string,
+	io: TernSettingsIo = defaultTernSettingsIo(),
+): { file: string; backup: string | null; changed: string[]; alreadySet: boolean } {
+	const before = io.read();
+	let current: Record<string, unknown> = {};
+	if (before !== null) {
+		try {
+			current = JSON.parse(before) as Record<string, unknown>;
+		} catch (error) {
+			// Refuse to overwrite a settings file we cannot parse: the user's window size, theme
+			// and keybindings are in there too, and losing them to a typo here would be far worse
+			// than this command not working.
+			throw new Error(
+				`${io.file} is not valid JSON (${error instanceof Error ? error.message : String(error)}). ` +
+					`Fix or move it, then run this again. Nothing was changed.`,
+			);
+		}
+	}
 
 	const changed: string[] = [];
 	const previousNewBlocks = String(current.new_blocks ?? "unset");
@@ -110,8 +163,25 @@ export function setTernAgentDefaults(agentCommand: string): { file: string; back
 		current.agent_command = agentCommand;
 		changed.push(`agent_command: ${JSON.stringify(previousAgent)} → ${JSON.stringify(agentCommand)}`);
 	}
-	writeFileSync(file, `${JSON.stringify(current, null, 2)}\n`, "utf8");
-	return { file, backup, changed };
+
+	if (changed.length === 0) {
+		// Nothing to do, so nothing is written and no backup is taken.
+		return { file: io.file, backup: null, changed, alreadySet: true };
+	}
+
+	// Only back up when there is something to back up: on a fresh install there is no file yet,
+	// and writing `${file}.bak-...` next to a non-existent settings.json would be litter.
+	const backup =
+		before === null
+			? null
+			: (() => {
+					const target = `${io.file}.bak-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+					writeFileSync(target, before, "utf8");
+					return target;
+				})();
+
+	io.write(`${JSON.stringify(current, null, 2)}\n`);
+	return { file: io.file, backup, changed, alreadySet: false };
 }
 
 export function assertTern(env: TernEnv, what: string): void {
