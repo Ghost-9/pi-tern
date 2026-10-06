@@ -43,6 +43,7 @@ The extension itself never writes TSP frames, so pi's renderer is not disturbed 
 | Pane output waits | stable | `tern_watch --expect <regex>` polls a pane until it prints a pattern (dev servers, builds) and returns the tail |
 | Browser suite | stable | relay/CLI ops, stale-ref recovery, named PNG baselines, network capture (Resource Timing HAR-lite), PDF export, multi-tab listing/close, form-field helper |
 | pi-bridge canvas | experimental | linked automatically on the first Tern session — installing pi-tern is enough; renders a native Markdown dashboard with a session TOC and recent activity (`ctrl+shift+f10`); `PI_TERN_BRIDGE=0` disables |
+| Tool results panel | experimental | a second Tern plugin rendering what your tools produced as **native widgets**: a `git diff` as a real diff view, a file read as highlighted code, a test run as a pass/fail/skip meter. Open with `ctrl+shift+f11`. Classified by `lib/toolresults.ts`; falls back to muted text when nothing fits, because a confident-looking 0/0/0 meter is worse than the text it replaced |
 | Golden shots | stable | `tern_shot` renders scenario files to PNG + layout JSON (`tern shot`) |
 | UI test harness | stable | `tern_ui_test` / `/tern ui-test <scenario> [expect]` runs a scenario and asserts against a control endpoint |
 | Diagram pipelines | stable | `--from "<cmd>"` renders mermaid from a command's output; `git` renders the repo as a gitGraph |
