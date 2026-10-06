@@ -46,7 +46,7 @@ import { bridgeDir, buildDashboard, ensureBridge, linkBridge, writeDashboard, wr
 import { gitGraphFromLog, mermaidFromOutput, runCommand } from "./lib/diagrams.ts";
 import { dbQueryGuard } from "./lib/guard.ts";
 import { uiTest } from "./lib/uitest.ts";
-import { mailbox } from "./lib/mailbox.ts";
+import { mailbox, paneKind } from "./lib/mailbox.ts";
 import { relayPing } from "./lib/relay.ts";
 import { runShellInTern } from "./lib/run.ts";
 import { loadState, saveState } from "./lib/state.ts";
@@ -54,7 +54,7 @@ import { insideMultiplexer, readTernEnv, requireTernCli, runTern, scratchDir, ty
 import { describeRefs, linkifyFileRefs, parseFileRefs, type FileRef } from "./lib/refs.ts";import { cleanShellBlock, extractMermaids, extractShellBlocks, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
 import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, normalizeOsc877, type TspHello } from "./lib/tsp.ts";
 
-const PI_TERN_VERSION = "1.1.4";
+const PI_TERN_VERSION = "1.1.5";
 
 /** The only tools declared to the model; everything else is `deferred` (no schema, no listing). */
 const DIRECT_TOOLS = new Set(["tern_status", "tern_run", "tern_browser"]);
@@ -391,6 +391,40 @@ function refreshBridge(ctx: any): void {
 	}
 }
 
+/**
+ * Tern only displays a TSP surface in an **agent** block; a shell block accepts the frames and draws
+ * nothing, which reads as a blank pane. Detect it at session start and hand the terminal back to
+ * pi's own TUI, so the session stays usable and the reason is readable.
+ *
+ * Returns a human-readable warning when it fell back, or undefined when native surfaces are fine.
+ */
+async function ensureNativeSurfaceIsDisplayable(): Promise<string | undefined> {
+	const sink = (globalThis as {
+		__piTernNative?: { state?: () => { active?: boolean }; fallback?: (reason: string) => boolean };
+	}).__piTernNative;
+	if (!sink?.fallback || sink.state?.().active === false) return undefined;
+	if (process.env.PI_TERN_SKIP_KIND_CHECK === "1") return undefined;
+	const env = readTernEnv();
+	const paneId = env.paneId ?? process.env.TERN_PANE;
+	if (!paneId) return undefined;
+	let kind: string | undefined;
+	try {
+		kind = (await paneKind(paneId))?.kind;
+	} catch {
+		return undefined; // a mailbox that cannot answer must never block a session
+	}
+	if (kind === undefined || kind === "agent") return undefined;
+	const reason =
+		`native surfaces are not displayed in a Tern *${kind}* block (only an agent block draws them). ` +
+		"Falling back to pi's own interface.";
+	try {
+		sink.fallback(reason);
+	} catch {
+		return undefined;
+	}
+	return reason;
+}
+
 /** One-line TOC entry for a rendered message. */
 function tocFromMarkdown(markdown: string, at: Date): string {
 	const heading = markdown.split("\n")[0] ?? "";
@@ -693,6 +727,15 @@ export default function piTern(pi: ExtensionAPI) {
 		registerProbe(ctx);
 		updateTitle(ctx);
 		refreshBridge(ctx);
+		// A native surface is displayed only in an agent block. Check before anything else, and when it
+		// is the wrong kind hand the terminal back so the session is usable rather than blank.
+		void ensureNativeSurfaceIsDisplayable()
+			.then((warning) => {
+				if (!warning) return;
+				updateTitle(ctx);
+				ctx.ui.notify(warning, "warn");
+			})
+			.catch(() => undefined);
 		// pi writes its own startup title; re-apply ours once it has settled.
 		setTimeout(() => updateTitle(ctx), 3000);
 		const persisted = loadState();
@@ -2034,6 +2077,9 @@ export default function piTern(pi: ExtensionAPI) {
 						const env = readTernEnv();
 						const version = await runTern(["--version"], 5000);
 						const relay = env.paneSocket ? await relayPing(env.paneSocket, 5000) : undefined;
+						// The block kind decides whether a native surface can be displayed at all, so it belongs
+						// in the one command people run when something looks broken.
+						const kind = env.paneId ? await paneKind(env.paneId).catch(() => undefined) : undefined;
 						ctx.ui.notify(
 							JSON.stringify(
 								{
@@ -2041,6 +2087,8 @@ export default function piTern(pi: ExtensionAPI) {
 									env,
 									probe: probe.status,
 									tern: version.stdout.trim(),
+									block: kind ?? "unknown (no pane id, or the pi-bridge plugin did not answer)",
+									native: kind ? (kind.kind === "agent" ? "surfaces display here" : "falls back — surfaces display only in an agent block") : undefined,
 									relay,
 									control: loadState().control ?? null,
 									state: loadState(),

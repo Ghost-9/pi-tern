@@ -1,5 +1,50 @@
 # Changelog
 
+## 1.1.5 — 2026-10-06
+
+**The block-kind trap, fixed at the root — and the reason the previous release looked broken.**
+
+### Native surfaces display only in an **agent** block
+
+Tern draws a TSP surface in an **agent** block. In a **shell** block it accepts every frame, the
+surface materialises (`capture --surfaces` returns the parsed content) — and **nothing is ever
+drawn**. The pane is blank, and no error appears anywhere. That is what "native mode renders
+nothing" turned out to be, and it cost a day: five tests used `tern new tab -- <cmd>`, which makes a
+shell block, and every one of them was looking at a blank pane for that reason.
+
+A screenshot with both kinds side by side settled it in one image: shell pane blank, agent block
+showing pi's transcript, its `[Context]`/`[Skills]` sections and Tern's composer status line.
+
+### The fix: detect it and hand the terminal back
+
+- **`native/patch.mjs`** exposes `fallback(reason)` on the native sink. It closes the surface and
+  flips `active`, so `ProcessTerminal.write` routes to the original ANSI writer again — pi's own
+  interface comes back on the grid.
+- **`lib/bridge-plugin.ts`** gains a `pane.kind` mailbox op, reading `cx.session:panes()`. This is the
+  only place a block kind is exposed: `tern inspect --json` carries client kinds only, and
+  `tern whoami` carries just the identity chain.
+- **`index.ts`** checks at session start. Wrong kind → hand the terminal back and say why. A mailbox
+  that cannot answer never blocks a session, and `PI_TERN_SKIP_KIND_CHECK=1` disables the check.
+- **`/tern diagnose`** now reports the block kind and whether native surfaces can display there.
+
+### Guards, because this class of bug is invisible by construction
+
+- **`scripts/plugin-check.sh`** — reload, force a window start (`tern --exit-after-first-frame`), grep
+  the log for `plugin window entry failed to load`. `tern plugin reload` exits 0 and `plugin list`
+  still says `ready` for a plugin that cannot load at all, so this is the only honest check. It is in
+  the gate.
+- **`test/bridge-luau.test.ts`** now also asserts the op list has no truncated or duplicated branches
+  — a stray `(` reached the tree while adding `pane.kind`, invisible to a quote-balance check.
+
+### Also
+
+- README: a dedicated section on the agent-block requirement, the `agent_command` setup, and the
+  daemon-lags-the-binary gotcha (observed: binary 0.5.1, hello `ver: "0.5.0"` — the session daemon
+  survives an app update by design, so restart it before attributing behaviour to a version bump).
+
+Gate: 80/80 unit · 7/7 compat · 19/19 live · plugin loads.
+
+
 ## 1.1.4 — 2026-10-06
 
 **One fix: the mailbox guard contradicted the capability manifest.**

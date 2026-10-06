@@ -20,6 +20,9 @@ if (process.env.PI_TERN_NATIVE === "1" && typeof ProcessTerminal === "function")
   });
   const __origWrite = ProcessTerminal.prototype.write;
   ProcessTerminal.prototype.write = function (data) {
+    // 'active === false' means the surface was handed back (wrong block kind, or a sink failure):
+    // pi's own ANSI must reach the grid again, or the pane stays blank forever.
+    if (__sink.active === false) return __origWrite.call(this, data);
     try {
       __sink.feed(String(data));
     } catch {
@@ -30,7 +33,7 @@ if (process.env.PI_TERN_NATIVE === "1" && typeof ProcessTerminal === "function")
   const __origStart = ProcessTerminal.prototype.start;
   ProcessTerminal.prototype.start = function (onInput, onResize) {
     const wrapped = (data) => {
-      if (typeof data !== "string") return onInput(data);
+      if (typeof data !== "string" || __sink.active === false) return onInput(data);
       let rest = data;
       try { rest = __sink.handleInput(data); } catch { rest = data; }
       if (rest) onInput(rest);
@@ -41,6 +44,21 @@ if (process.env.PI_TERN_NATIVE === "1" && typeof ProcessTerminal === "function")
     state: () => __sink.nativeState(),
     suspend: () => __sink.suspend(),
     resume: () => __sink.resume(),
+    /**
+     * Give the pane back to pi's own TUI and stop drawing a surface.
+     *
+     * This is the escape hatch for the one case that used to fail silently: Tern only DISPLAYS a TSP
+     * surface in an *agent* block. In a shell block the frames are accepted and the surface
+     * materialises, but nothing is ever drawn — so the pane goes blank with no error anywhere. The
+     * extension detects that (via the plugin's pane kind) and calls this, which puts pi's ANSI back
+     * on the grid so the session is usable and the warning is readable.
+     */
+    fallback: (reason) => {
+      try { __sink.close(); } catch {}
+      __sink.active = false;
+      globalThis.__piTernNativeFellBack = reason || "native surfaces are not displayed here";
+      return true;
+    },
   };
   process.once("exit", () => { try { __sink.close(); } catch {} });
 }

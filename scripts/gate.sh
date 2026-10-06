@@ -34,6 +34,11 @@ if [ -f native/compat.mjs ]; then
 	step "stock fallback (compat matrix)" node native/compat.mjs
 fi
 
+# A window start is what compiles the plugin's Luau; `plugin reload` cannot see a syntax error.
+if [ "${PI_TERN_SKIP_LIVE:-0}" != "1" ]; then
+	step "tern plugin loads" bash scripts/plugin-check.sh pi-bridge
+fi
+
 if [ "${PI_TERN_SKIP_LIVE:-0}" != "1" ]; then
 	if command -v tern >/dev/null 2>&1; then
 		step "live surface (no Tern pane)" node --experimental-strip-types scripts/verify.ts

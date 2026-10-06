@@ -80,6 +80,24 @@ test("the window half only uses APIs it is allowed to use", () => {
 	assert.ok(BRIDGE_WINDOW_LUAU.includes("tern.timer"), "the mailbox timer is armed");
 });
 
+test("the mailbox op list has no truncated or duplicated branches", () => {
+	// A stray paren or a lost `then` is invisible to a quote-balance check but fatal to Lua, and Tern
+	// only reports it on the next window start. One such slip reached the tree while adding pane.kind.
+	const ops = [...BRIDGE_WINDOW_LUAU.matchAll(/if op == "([a-z.]+)" then/g)].map((m) => m[1]);
+	assert.ok(ops.includes("system.ping"), "system.ping is present");
+	assert.ok(ops.includes("pane.kind"), "pane.kind is present (the block-kind guard depends on it)");
+	assert.equal(new Set(ops).size, ops.length, `duplicate op branches: ${ops.join(", ")}`);
+	for (const line of BRIDGE_WINDOW_LUAU.split("\n").filter((l) => l.includes("if op =="))) {
+		assert.ok(line.includes(" then"), `Lua if without then: ${line.trim()}`);
+		assert.ok(!line.includes("if (op"), `stray paren in Lua if: ${line.trim()}`);
+	}
+});
+
+test("pane.kind reads the block kind the native fallback depends on", () => {
+	assert.ok(BRIDGE_WINDOW_LUAU.includes("cx.session:panes()"), "reads panes from the window API");
+	assert.ok(BRIDGE_WINDOW_LUAU.includes("p.kind"), "returns the kind field");
+});
+
 test("the dashboard prefers the structured view and falls back to markdown", () => {
 	assert.ok(BRIDGE_WINDOW_LUAU.includes("dashboard.json"), "reads the structured panel");
 	assert.ok(BRIDGE_WINDOW_LUAU.includes("dashboard.md"), "keeps the markdown fallback");

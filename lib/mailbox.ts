@@ -34,6 +34,22 @@ function assertTernReady(): void {
 }
 
 /**
+ * What kind of Tern block is this pane?
+ *
+ * Tern only displays a TSP surface in an **agent** block. In a shell block the frames are accepted,
+ * the surface materialises, and nothing is ever drawn — so the pane goes blank with no error to read.
+ * The kind is only exposed to a window plugin (`cx.session:panes()`), so this asks pi-bridge.
+ */
+export async function paneKind(
+	pane: number | string,
+	timeoutMs = 6000,
+): Promise<{ kind?: string; program?: string; title?: string } | undefined> {
+	const result = await mailbox("pane.kind", { pane: String(pane) }, timeoutMs);
+	if (!result.ok) return undefined;
+	return result.result as { kind?: string; program?: string; title?: string } | undefined;
+}
+
+/**
  * The plugin version this extension speaks to, taken from the plugin source it ships.
  *
  * These were two hand-maintained constants, and they drifted: the plugin moved to 1.1.2 while

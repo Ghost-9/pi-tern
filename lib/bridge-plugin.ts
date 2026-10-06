@@ -3,7 +3,7 @@
 export const BRIDGE_PLUGIN_TOML = `schema = 1
 id = "pi-bridge"
 name = "pi-bridge"
-version = "1.1.4"
+version = "1.1.5"
 description = "Shows the pi-tern dashboard, answers batched data requests (SQLite, documents, boards, settings) and exposes pi status to Carly."
 window = "window.luau"
 `;
@@ -21,7 +21,7 @@ local ABOUT = table.concat({
 local REFRESH_MS = 3000
 local MAILBOX_MS = 250
 local MAILBOX_FAST_MS = 100
-local PLUGIN_VERSION = "1.1.4"
+local PLUGIN_VERSION = "1.1.5"
 local state = {
 	pane = nil,
 	armed = false,
@@ -350,6 +350,22 @@ end
 local function run_op(cx, op, args, cb)
 	if op == "system.ping" then
 		return cb(true, { plugin = "pi-bridge", version = PLUGIN_VERSION })
+	end
+
+	-- What kind of Tern block is a pane? 'terminal' for a shell block, 'agent' for an agent block.
+	-- The extension asks this at session start because Tern only DISPLAYS a TSP surface in an agent
+	-- block: in a shell block the frames are accepted and nothing is drawn, which reads as a blank
+	-- pane. 'cx.session:panes()' is the only place the kind is exposed — 'tern inspect --json' carries
+	-- client kinds only and 'tern whoami' carries just the identity chain.
+	if op == "pane.kind" then
+		local wanted = tonumber(args.pane) or tostring(args.pane or "")
+		local panes = cx.session:panes()
+		for _, p in ipairs(panes or {}) do
+			if tostring(p.pane) == tostring(wanted) or (p.id ~= nil and tostring(p.id) == tostring(wanted)) then
+				return cb(true, { pane = p.pane, kind = p.kind, program = p.program, title = p.title, running = p.running and p.running.line or nil })
+			end
+		end
+		return cb(false, nil, "no pane " .. tostring(wanted) .. " in this window")
 	end
 
 	if op == "db.tables" or op == "db.schema" or op == "db.query" or op == "db.exec" then

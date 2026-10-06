@@ -68,6 +68,37 @@ Tern window, drive Tern's browser, run and capture panes, spawn fleet panes, and
 worktrees and PRs. That is what `/tern capabilities` reports per feature, with a reason when
 a feature is unavailable here.
 
+### Native surfaces need an **agent block**, not a shell block
+
+This is the one thing that will look broken if you get it wrong. Tern displays a TSP surface only in
+an **agent** block. Started in a **shell** block, pi-tern's frames are accepted and the surface
+materialises — but nothing is ever drawn, so the pane is **blank**, with no error anywhere to read.
+
+```
+agent block  →  pi's transcript, composer and status render as Tern surfaces   ✔
+shell block  →  blank pane, no error, no clue                                  �’
+```
+
+So either:
+
+1. **Open an agent block** — the `+` menu's agent block (Tern calls it “New Agent Block”), or
+2. Make pi the agent Tern starts. Tern's `agent_command` setting is what an agent block runs:
+
+```jsonc
+// ~/Library/Application Support/Tern/settings.json
+{ "agent_command": "/Users/you/bin/pi-tern", "agent_placement": "split" }
+```
+
+And you can verify which kind you are in: `/tern doctor` reports the block kind, and pi-tern warns
+when it detects a shell block.
+
+> **Since 1.1.5 pi-tern detects this and recovers.** At session start it asks the `pi-bridge` plugin
+> what kind of block it is in; if it is not an agent block it hands the terminal back to pi's own
+> interface and tells you why, instead of leaving a blank pane. `PI_TERN_SKIP_KIND_CHECK=1` disables
+> the check. The kind is only exposed to a window plugin (`cx.session:panes()`), which is why the
+> check goes through the mailbox — `tern inspect --json` carries client kinds only, and
+> `tern whoami` carries just the identity chain.
+
 ## Install
 
 ```bash
@@ -186,6 +217,12 @@ Three channels, kept separate:
 - **No native Tern surfaces.** pi 1.0.3 and `@earendil-works/pi-tui` 1.0.3 expose no frame-provider seam, and their ANSI frames are multi-write synchronized-output transactions with private cursor accounting. A second writer tears frames, so this extension does not attempt TSP surfaces.
 - **Tern's agent layer is omp-keyed.** `cx.agents:transcript` reads the `omp.session` surface and returns `{}` for non-omp programs; the Agent chip, Carly transcripts and prompt injection are therefore unavailable.
 - **Tern file blocks are not panes.** `tern capture` cannot read a file block back (`no such pane in this session daemon`), so diagram rendering is verified visually.
+- **A running Tern daemon is not the same as the new Tern binary.** The session daemon survives an app
+  update by design, so after updating Tern, `tern --version` can report the new build while the live
+  daemon still answers with the old one (observed: binary 0.5.1, hello `ver: "0.5.0"`). Restart the
+  daemon or the app before attributing any behaviour change to a version bump.
+- **Native surfaces are agent-block-only** (see above). In a shell block the pane is blank and nothing
+  reports an error; 1.1.5 detects it and falls back, earlier versions did not.
 - **Browser capture needs a rendered picture-in-picture.** Tern answers `capture: a 0×0 px image is out of range` while the PiP is not visible. `tern_chart` sidesteps this for SVG charts by rasterizing locally (`rsvg-convert` → `inkscape` → `qlmanage` → browser); for HTML/JS pages the browser is still the only renderer.
 - **Inline figures in the conversation are opt-in and unconfirmed.** Tern 0.5.0 advertises the `blobs` feature and its frame dialect has an `image` node with a `blob` prop, but the blob wire shape has not been verified against a live Tern, so `PI_TERN_INLINE_IMAGES=1` only *attempts* it; every rejection lands in `nativeState().lastError`. Use the file block or `png: true` for anything that must work today.
 - **`tern_ctl` needs a control endpoint.** Run `/tern control` (headless by default) or launch Tern with `--control EP` / set `TERN_WINDOW_SOCKET`.
