@@ -1,5 +1,5 @@
 /**
- * One version, one place.
+ * One version, one place, and one set of devDependencies.
  *
  * The 1.1.3 P0 was a hand-maintained `EXPECTED_PLUGIN_VERSION` that fell behind the plugin it was
  * checking, so `awaitResponse` rejected correct replies and every data-plane call
@@ -11,7 +11,7 @@
  something that has to be caught in production again.
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -20,7 +20,10 @@ import { EXPECTED_PLUGIN_VERSION } from "../lib/mailbox.ts";
 import { PLUGIN_VERSION } from "../lib/version.ts";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")) as { version: string };
+const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")) as {
+	version: string;
+	devDependencies?: Record<string, string>;
+};
 
 test("the plugin version is derived from package.json, not written down twice", () => {
 	assert.equal(PLUGIN_VERSION, pkg.version, "lib/version.ts reads package.json");
@@ -46,6 +49,35 @@ test("the manifest, the Luau and the package all agree", () => {
  * to be ignored.
  */
 const VERSION_CARRYING = ["index.ts", "lib/bridge-plugin.ts", "lib/mailbox.ts", "scripts/verify.ts"];
+
+test("the devDependencies the strict typecheck needs are declared AND installed", () => {
+	// This is not hypothetical: `git show HEAD:package.json > package.json` while bumping the
+	// version silently dropped the pi and typebox devDependencies. Locally node_modules still had
+	// them, so `tsc --noEmit` passed; `npm ci` in CI did not, and the whole strict pass evaporated
+	// back into 60 implicit-`any` errors that nobody was looking at.
+	for (const name of ["@earendil-works/pi-coding-agent", "typebox", "typescript"]) {
+		const declared = (pkg.devDependencies ?? {})[name];
+		assert.ok(declared, `${name} must be a devDependency - the strict typecheck needs its real types`);
+		let installed: { version?: string } | null = null;
+		try {
+			installed = JSON.parse(
+				readFileSync(path.join(root, "node_modules", name, "package.json"), "utf8"),
+			) as { version?: string };
+		} catch {
+			installed = null;
+		}
+		assert.ok(installed?.version, `${name} must be installed (run npm install)`);
+	}
+
+	// And the stubs must stay gone: their presence is what made tsc silently permissive before.
+	for (const stub of ["types/pi.d.ts", "types/typebox.d.ts"]) {
+		assert.equal(
+			existsSync(path.join(root, stub)),
+			false,
+			`${stub} must not exist - an ambient \`declare module\` stub shadows the real types`,
+		);
+	}
+});
 
 test("no file that carries this project's version hard-codes it", () => {
 	const offenders: string[] = [];
