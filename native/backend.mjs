@@ -20,6 +20,7 @@ const TSP_PREFIX = "\x1b_tsp;";
 export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.session", adopt = false, surfaceId } = {}) {
 	const cols = Number(hello?.cols) || process.stdout.columns || 80;
 	const rows = Math.max(5, Number(hello?.rows) || process.stdout.rows || 24);
+	const features = Array.isArray(hello?.features) ? hello.features.map(String) : [];
 	const screen = new Screen(cols, rows);
 	const record = (verb, body, params, dir = "out") => {
 		if (!recordPath) return;
@@ -44,6 +45,10 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 	let statusAdded = false;
 	let suspended = false;
 	let inputBuffer = "";
+	/** Last TSP error event we saw, so a rejected op is diagnosable instead of silent. */
+	let lastError = null;
+	let figureSeq = 0;
+	let figures = [];
 
 	const send = (verb, body, params) => {
 		process.stdout.write(encodeMessage(verb, body, params));
@@ -155,7 +160,11 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 				case "error": {
 					// The document can be rebuilt after Tern restarts or drops a region.
 					const msg = String(event.msg ?? "");
-					if (msg.includes("unknown id main") || msg.includes("unknown id m")) mainAdded = false;
+					lastError = { at: Date.now(), msg };
+					if (msg.includes("unknown id main") || msg.includes("unknown id m")) {
+						mainAdded = false;
+						figures = [];
+					}
 					if (msg.includes("unknown id dock")) {
 						dockAdded = false;
 						editorAdded = false;
@@ -183,7 +192,61 @@ export function createNativeSink({ hello, recordPath, title = "pi", role = "pi.s
 			return surface;
 		},
 		nativeState() {
-			return { active: sink.active, suspend: suspended, editor: Boolean(editor), surface, seq };
+			return {
+				active: sink.active,
+				suspend: suspended,
+				editor: Boolean(editor),
+				surface,
+				seq,
+				features,
+				figures: figures.length,
+				lastError,
+			};
+		},
+		/**
+		 * Append an image to the conversation.
+		 *
+		 * The transcript region (`main`) is already a `col` whose first child is the
+		 * `rows` node, so a figure added to `main` lands after the transcript — i.e. it
+		 * reads as the newest thing in the conversation.
+		 *
+		 * The blob wire shape is not yet confirmed against a live Tern, so it is
+		 * selectable with PI_TERN_BLOB_OP and every rejection is recorded in
+		 * nativeState().lastError. Requires the `blobs` feature in the hello.
+		 */
+		figure({ data, mime = "image/png", caption } = {}) {
+			if (process.env.PI_TERN_INLINE_IMAGES !== "1") {
+				return { ok: false, reason: "inline images are opt-in: set PI_TERN_INLINE_IMAGES=1" };
+			}
+			if (!features.includes("blobs") && process.env.PI_TERN_FORCE !== "1") {
+				return { ok: false, reason: "Tern did not advertise the `blobs` feature" };
+			}
+			if (typeof data !== "string" || data.length === 0) return { ok: false, reason: "no image data" };
+			open();
+			figureSeq += 1;
+			const id = `fig${figureSeq}`;
+			const blobId = `b${figureSeq}`;
+			const mode = process.env.PI_TERN_BLOB_OP ?? "id-mime-data";
+			const ops = [];
+			if (mode === "id-mime-data") ops.push(["blob", blobId, mime, data]);
+			else if (mode === "mime-data") ops.push(["blob", mime, data]);
+			const props = mode === "inline" ? { blob: { mime, data } } : { blob: blobId };
+			if (caption) props.caption = String(caption);
+			ops.push(["add", id, "main", null, { id, k: "image", p: props }]);
+			figures.push(id);
+			const keep = Math.max(1, Number(process.env.PI_TERN_INLINE_KEEP) || 3);
+			while (figures.length > keep) ops.push(["del", figures.shift()]);
+			seq += 1;
+			send("f", { sf: surface, s: seq, ops });
+			return { ok: true, id, ops: ops.length, mode, features };
+		},
+		/** Emit a bare frame op list (for probing new Tern node kinds). */
+		frame(ops) {
+			if (!Array.isArray(ops) || ops.length === 0) return { ok: false, reason: "ops must be a non-empty array" };
+			open();
+			seq += 1;
+			send("f", { sf: surface, s: seq, ops });
+			return { ok: true, seq };
 		},
 		attachEditor(instance) {
 			if (!instance || instance === editor) return;

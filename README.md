@@ -24,7 +24,12 @@ It never writes TSP frames, so pi's renderer is not disturbed. Native Tern surfa
 | Feature | Status | What it does |
 | --- | --- | --- |
 | TSP handshake | stable | Sends `hello` + DA1 on the pty and reads the reply through pi's raw input. Tern 0.4.5 answers with 44 node kinds and 10 features |
-| Mermaid diagrams | stable | `tern_diagram` / `/tern diagram` opens a file block rendered by Tern's merman engine. `--last` uses the newest fence in the conversation; `pin` keeps one path so re-renders update the same block |
+| Mermaid diagrams | stable | `tern_diagram` / `/tern diagram` opens a file block rendered by Tern's merman engine (18 diagram types, including `xychart-beta` bar/line charts). `--last` uses the newest fence in the conversation; `pin` keeps one path so re-renders update the same block |
+| Charts | stable | `tern_chart` draws bar/hbar, line, area, pie and donut from plain data as a themed SVG that Tern renders as a native image block. `png: true` rasterizes it locally so the model can read the chart back. Value labels keep full precision |
+| Fleet panes | stable | `tern_fleet` treats a Tern pane as a thread: `spawn` (a `pi -p` task, an interactive pi, or any command) · `list` with liveness · `send` to steer · `read` · `wait` · `stop`. Task text goes through a file, so prompts cannot break the shell |
+| Git worktrees | stable | `tern_worktree` list/create/remove/prune/status with dirty counts and optional `startFromOrigin`. Pure git — works with no Tern at all |
+| Pull requests | stable | `tern_pr` summary (checks collapsed to counts plus failing names, plus a one-line verdict), list, comments, `watch` (`gh pr checks --watch` in a visible pane), open in Tern's browser |
+| Capability contract | stable | `tern_status { manifest: true }` / `/tern capabilities`: one machine-readable document listing every capability, whether it is available here, and why not |
 | Runnable shell blocks | stable | `tern_run` / `/tern run [--last]` runs a bash/sh command from the conversation in a visible Tern pane, waits for exit and returns the captured output (`PI_TERN_RUN=0` disables) |
 | Session mirror | stable | `/tern mirror on` writes this conversation to `session-mirror.md` and opens it as a Tern block; a session TOC, timestamps and tool lines are included, and Mermaid inside it renders natively |
 | Data plane | stable | `tern_db` (SQLite read-only by default), `tern_doc` (live documents, unsaved edits, heading-aware edits), `tern_board` (native task board lanes/cards) through Tern's own window APIs via the pi-bridge mailbox |
@@ -50,9 +55,18 @@ It never writes TSP frames, so pi's renderer is not disturbed. Native Tern surfa
 
 ## Requirements
 
-- Tern 0.4.5 or newer (closed beta; a Stencil account comes from Tern itself)
+- Tern 0.4.5 or newer, running (closed beta; a Stencil account comes from Tern itself)
 - pi 1.0.x
-- macOS or Linux. Not functional inside tmux, screen or zellij: those swallow APC strings, so the handshake never completes and the extension stays inert
+- macOS or Linux. **Not functional inside tmux, screen or zellij:** those swallow APC strings, so the TSP handshake never completes and the pane-only features stay inert. The CLI-backed tools (`tern_chart`, `tern_worktree`, `tern_pr`) do not depend on the handshake and keep working.
+
+### Do I need to run pi *inside* Tern?
+
+No. Only the pane-scoped features do (TSP probe, live tab title, relay push, native
+surfaces). Everything else needs just a running Tern daemon, so a **pi-tern tool from a
+T3-hosted agent, a cron job or a plain terminal** can still open diagrams and charts in the
+Tern window, drive Tern's browser, run and capture panes, spawn fleet panes, and manage
+worktrees and PRs. That is what `/tern capabilities` reports per feature, with a reason when
+a feature is unavailable here.
 
 ## Install
 
@@ -172,7 +186,8 @@ Three channels, kept separate:
 - **No native Tern surfaces.** pi 1.0.3 and `@earendil-works/pi-tui` 1.0.3 expose no frame-provider seam, and their ANSI frames are multi-write synchronized-output transactions with private cursor accounting. A second writer tears frames, so this extension does not attempt TSP surfaces.
 - **Tern's agent layer is omp-keyed.** `cx.agents:transcript` reads the `omp.session` surface and returns `{}` for non-omp programs; the Agent chip, Carly transcripts and prompt injection are therefore unavailable.
 - **Tern file blocks are not panes.** `tern capture` cannot read a file block back (`no such pane in this session daemon`), so diagram rendering is verified visually.
-- **Browser capture needs a rendered picture-in-picture.** Tern answers `capture: a 0×0 px image is out of range` while the PiP is not visible (window or tab not frontmost).
+- **Browser capture needs a rendered picture-in-picture.** Tern answers `capture: a 0×0 px image is out of range` while the PiP is not visible. `tern_chart` sidesteps this for SVG charts by rasterizing locally (`rsvg-convert` → `inkscape` → `qlmanage` → browser); for HTML/JS pages the browser is still the only renderer.
+- **Inline figures in the conversation are opt-in and unconfirmed.** Tern 0.5.0 advertises the `blobs` feature and its frame dialect has an `image` node with a `blob` prop, but the blob wire shape has not been verified against a live Tern, so `PI_TERN_INLINE_IMAGES=1` only *attempts* it; every rejection lands in `nativeState().lastError`. Use the file block or `png: true` for anything that must work today.
 - **`tern_ctl` needs a control endpoint.** Run `/tern control` (headless by default) or launch Tern with `--control EP` / set `TERN_WINDOW_SOCKET`.
 - **The pi-bridge canvas is experimental.** The plugin loads and binds its chord (verified in Tern's log and `plugin list`), but the Luau canvas rendering itself has not been visually verified from CI.
 - **Mailbox latency** is one plugin poll (~0.25–0.75 s per call); DB access is read-only unless `exec` is explicitly allowed; `agent.db`-style stores hold credentials, so pass explicit paths and never select secret columns.

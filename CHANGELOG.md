@@ -1,5 +1,104 @@
 # Changelog
 
+## 1.1.0 — 2026-10-06
+
+**T3-shaped work and native figures. Everything here works with no Tern pane — only a
+running Tern daemon.**
+
+### The pane gate is relaxed (the headline)
+
+The extension used to refuse every tool unless pi itself was running inside a Tern pane
+(`TERM_PROGRAM=tern`). The `tern` CLI has no such limit, so the gate was costing the whole
+cross-harness composition: a **T3-hosted** or headless agent could not use Tern at all.
+Now:
+
+- **CLI-backed tools** (`tern_diagram`, `tern_browser`, `tern_chart`, `tern_capture`,
+  `tern_run`, `tern_fleet`, `tern_worktree`, `tern_pr`) require only that `tern --version`
+  answers — probed once and cached for 5 s. Errors name the real cause (missing CLI, or
+  inside tmux/screen/zellij) instead of blaming a missing pane.
+- **Pane-only features** (TSP probe, chrome title, relay push, native surfaces) still say so,
+  with `paneRequired()` explaining *why a pane is different* and pointing at the CLI tools.
+- Verified live from a T3-hosted agent: `tern open` placed a file block in the running Tern
+  window, and `tern browser open/capture` returned a 45,200-byte 1280×800 PNG.
+
+### `tern_chart` — native figures, three routes
+
+| Route | Mechanism | Needs |
+| --- | --- | --- |
+| `mermaid` | Tern's merman engine (xychart-beta, pie, gantt, gitGraph, timeline, quadrant, sankey, mindmap — 18 diagram types) | Tern daemon |
+| data → SVG | pi-tern generates a themed SVG from `data`/`series`; Tern renders it as an image block | Tern daemon |
+| `png: true` | local rasterization for the model to read back | `rsvg-convert` (or `qlmanage`, or the browser) |
+
+- Chart kinds: `bar`/`hbar` (labelled bars), `line`, `area`, `pie`, `donut`.
+- **Value labels keep full precision** — the axis abbreviates (`75k`), the labels do not (`58,715`).
+- **SVG rasterization no longer needs a visible window.** `rsvg-convert` (then `inkscape`, then
+  macOS `qlmanage`, then the browser) removes the old failure mode where
+  `capture` returned `0×0 px` whenever the Tern window was in the background. Measured: a
+  chart that failed at `0×0` through the browser produced a 23,536-byte PNG locally.
+- `inline: true` asks native mode to append the figure into the conversation (see below).
+
+### `tern_fleet` — panes as threads
+
+`spawn` (a `pi -p` task, an interactive pi, or any command) · `list` with liveness · `send`
+steer text/keys · `read` · `wait --until exit` · `stop`. Task text is written to a file and
+read with `"$(cat …)"`, so quotes, newlines and `$` in a prompt cannot corrupt the command.
+Members are recorded in `scratch/pi-tern/fleet.json` and reported against a live block list.
+
+### `tern_worktree` — pure git, no Tern required
+
+`list` (with dirty counts) · `create` (new or existing branch, optional `startFromOrigin`) ·
+`remove` · `prune` · `status`. Default path is a sibling `repo.wt.<branch>`.
+
+### `tern_pr` — GitHub state, in one line
+
+`summary` (checks collapsed to counts **plus failing names**, and a human verdict) · `list` ·
+`comments` (reviews + issue comments) · `watch` (runs `gh pr checks --watch` **in a visible
+Tern pane** and waits) · `open` (Tern browser). `status` reports `gh` availability/auth so a
+missing CLI is a clear message, not a stack trace.
+
+### The capability contract
+
+`tern_status { manifest: true }` and `/tern capabilities` return one machine-readable document:
+contract version, environment (`tern`, `gh`, rasterizer, native, platform), TSP state, tool
+exposure, and **every capability with `available` and a `reason` when it is not**. An
+orchestrator adapts instead of guessing; a bug report carries its own diagnosis.
+
+### Standardisation
+
+- **`scripts/gate.sh`** (`npm run gate`) — types, lint, tests, the stock-fallback compat matrix,
+  and a live no-pane surface check. Nothing ships unless it passes.
+- **`scripts/verify.ts`** (`npm run verify`) — 19 live checks, deliberately run from *outside* a
+  Tern pane, because that is the regression this release exists to catch.
+- **`profile/`** — two files that make this a team standard: an install README with the
+  capability/requirement table, and an `AGENTS.md` fragment that tells the agent which surface
+  to reach for.
+
+### Native mode: inline figures (instrumented spike)
+
+Tern 0.5.0 advertises the **`blobs`** feature and its frame dialect has an `image` node with a
+`blob` prop, so an image can be appended *into the conversation* rather than beside it. The
+sink now exposes `figure()` and `frame()`, records every rejected op in `nativeState().lastError`,
+and the blob wire shape is selectable (`PI_TERN_BLOB_OP=id-mime-data|mime-data|inline`) because
+it is not yet confirmed against a live Tern. **Opt-in:** `PI_TERN_INLINE_IMAGES=1`.
+
+### Fixes found by tightening the tests
+
+- **The compat matrix's two RPC checks had been passing for the wrong reason.** They asserted
+  that `pi --mode rpc` output contained the substring `tern`/`commands`/`result` — it never did;
+  they matched unrelated output. They now assert the property that matters: the launcher's stdio
+  is a **shape-identical stream to stock pi**, with no TSP frame in either.
+- `prVerdict` misclassified check states: a `statusCheckRollup` entry carries `conclusion`
+  (CheckRun) *or* `state` (StatusContext), never both, and `PENDING` was counted as neither
+  failing nor pending.
+- Value labels abbreviated large numbers (`58,715` → `59k`).
+
+### Prompt footprint
+
+Unchanged: **+774 tokens**, three declared tools. All five new tools are `deferred` — no schema,
+no listing, callable from codemode by name and indexed by `tern_status`.
+
+---
+
 ## 1.0.1 — 2026-10-06
 
 - Fix CI: mailbox tests set `PI_TERN_FORCE=1` (the fast non-Tern guard from 1.0.0 otherwise trips on runners without a Tern pane). No runtime change.

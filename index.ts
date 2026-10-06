@@ -24,6 +24,9 @@
  *   PI_TERN_DIAGRAM_AUTO=1 auto-open mermaid blocks found in replies
  *   PI_TERN_RELAY=0        use `tern browser` CLI instead of the daemon relay
  *   PI_TERN_FORCE=1        try Tern features outside a Tern pane
+ *   PI_TERN_AGENT=pi       agent binary used by tern_fleet
+ *   PI_TERN_INLINE_IMAGES=1  native mode: append figures into the transcript
+ *   PI_TERN_BLOB_OP        native mode: blob wire shape (id-mime-data|mime-data|inline)
  */
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -34,6 +37,11 @@ import { browserOp } from "./lib/browser.ts";
 import { bootstrapControl, capturePane, controlCommand, listPanes, remoteHosts, shotScenarios, waitForText } from "./lib/ctl.ts";
 import { openDiagram, writeDiagram, type DiagramPlacement } from "./lib/diagram.ts";
 import { waitForEvent } from "./lib/events.ts";
+import { renderChartSvg, renderFigure, type ChartSpec, type FigureResult } from "./lib/figure.ts";
+import { fleetRead, fleetSend, fleetSpawn, fleetStatus, fleetStop, fleetWait } from "./lib/fleet.ts";
+import { buildManifest, gatherEnvironment, renderManifest } from "./lib/manifest.ts";
+import { ghStatus, openPrInBrowser, prComments, prList, prSummary, prVerdict, prWatch } from "./lib/pr.ts";
+import { defaultWorktreePath, openWorktreePane, repoRoot, worktreeAdd, worktreeList, worktreePrune, worktreeRemove, worktreeStatus } from "./lib/worktree.ts";
 import { bridgeDir, buildDashboard, ensureBridge, linkBridge, writeDashboard } from "./lib/bridge.ts";
 import { gitGraphFromLog, mermaidFromOutput, runCommand } from "./lib/diagrams.ts";
 import { dbQueryGuard } from "./lib/guard.ts";
@@ -42,11 +50,39 @@ import { mailbox } from "./lib/mailbox.ts";
 import { relayPing } from "./lib/relay.ts";
 import { runShellInTern } from "./lib/run.ts";
 import { loadState, saveState } from "./lib/state.ts";
-import { insideMultiplexer, readTernEnv, runTern, scratchDir, type TernEnv } from "./lib/tern.ts";
+import { insideMultiplexer, readTernEnv, requireTernCli, runTern, scratchDir, type TernEnv } from "./lib/tern.ts";
 import { cleanShellBlock, extractMermaids, extractShellBlocks, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
 import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, normalizeOsc877, type TspHello } from "./lib/tsp.ts";
 
-const PI_TERN_VERSION = "1.0.1";
+const PI_TERN_VERSION = "1.1.0";
+
+/** The only tools declared to the model; everything else is `deferred` (no schema, no listing). */
+const DIRECT_TOOLS = new Set(["tern_status", "tern_run", "tern_browser"]);
+
+/** Names of the deferred tools, so tern_status can advertise them without cost. */
+const DEFERRED_TOOL_NAMES = [
+	"tern_diagram",
+	"tern_chart",
+	"tern_capture",
+	"tern_panes",
+	"tern_ctl",
+	"tern_mirror",
+	"tern_watch",
+	"tern_diagnose",
+	"tern_shot",
+	"tern_remote",
+	"tern_bridge",
+	"tern_db",
+	"tern_doc",
+	"tern_board",
+	"tern_carly",
+	"tern_notebook",
+	"tern_settings",
+	"tern_ui_test",
+	"tern_worktree",
+	"tern_pr",
+	"tern_fleet",
+];
 
 interface ProbeState {
 	status: "idle" | "pending" | "confirmed" | "absent" | "timeout" | "skipped";
@@ -349,6 +385,50 @@ function asText(text: string) {
 }
 
 /**
+ * Tool result for a figure: the text describes where it landed, and the PNG (when we
+ * have one) is attached so the model can see the chart it just drew.
+ *
+ * `inline` asks native mode to append the image into the conversation itself. That
+ * needs a Tern build advertising the `blobs` feature and PI_TERN_INLINE_IMAGES=1;
+ * when it is unavailable the file block is still there and the model still sees it.
+ */
+function figureContent(figure: FigureResult, inline: boolean) {
+	const notes: string[] = [`figure (${figure.route}) → ${figure.file}`];
+	if (figure.block !== undefined) notes.push(`Tern block ${figure.block}`);
+	if (figure.png) {
+		notes.push(
+			`PNG ${figure.png.width ?? "?"}x${figure.png.height ?? "?"} → ${figure.png.file}`,
+		);
+	}
+	if (inline) {
+		const sink = (globalThis as { __piTernNative?: { figure?: (input: unknown) => unknown } }).__piTernNative;
+		if (!sink?.figure) {
+			notes.push("inline: skipped — native mode is not active (run pi through the pi-tern launcher inside Tern)");
+		} else if (!figure.png?.data) {
+			notes.push("inline: skipped — no PNG to embed");
+		} else {
+			try {
+				const result = sink.figure({ data: figure.png.data, mime: figure.png.mime }) as
+					| { ok?: boolean; reason?: string; id?: string }
+					| undefined;
+				notes.push(
+					result?.ok
+						? `inline: appended to the conversation as ${result.id}`
+						: `inline: not appended — ${result?.reason ?? "native sink refused"}`,
+				);
+			} catch (error) {
+				notes.push(`inline: failed — ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+	}
+	const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
+		{ type: "text" as const, text: notes.join("\n") },
+	];
+	if (figure.png?.data) content.push({ type: "image" as const, data: figure.png.data, mimeType: figure.png.mime });
+	return { content, details: { route: figure.route, file: figure.file, block: figure.block, png: figure.png?.file } };
+}
+
+/**
  * Capture a browser screenshot with bounded retries: wait for the page to finish
  * loading, then retry on the WebView's 0x0 failure until the deadline.
  */
@@ -445,23 +525,32 @@ export default function piTern(pi: ExtensionAPI) {
 		name: "tern_status",
 		label: "Tern status",
 		description:
-			"Report whether pi runs inside Tern, the pane ids, the TSP hello reply (kinds, features, credits), the last mermaid seen, and the mirror state. More Tern tools are callable from codemode scripts by name (ctx.tools): tern_capture, tern_panes, tern_ctl, tern_mirror, tern_watch, tern_diagnose, tern_shot, tern_remote, tern_bridge, tern_doc, tern_board, tern_carly, tern_notebook, tern_settings.",
-		parameters: Type.Object({}),
-		async execute() {
+			"Report whether pi runs inside Tern, the pane ids, the TSP hello reply (kinds, features, credits), the last mermaid seen, and the mirror state. Set manifest to include the machine-readable capability contract (what is available right now and why not). More Tern tools are callable from codemode scripts by name (ctx.tools): tern_capture, tern_panes, tern_ctl, tern_mirror, tern_watch, tern_diagnose, tern_shot, tern_remote, tern_bridge, tern_doc, tern_board, tern_carly, tern_notebook, tern_settings, tern_chart, tern_worktree, tern_pr, tern_fleet.",
+		parameters: Type.Object({
+			manifest: Type.Optional(Type.Boolean({ description: "Include the capability manifest" })),
+		}),
+		async execute(_id, params) {
 			const env = readTernEnv();
-			return asText(
-				JSON.stringify(
-					{
-						env,
-						probe: { status: probe.status, hello: probe.hello },
-						lastMermaid: lastMermaid ? { chars: lastMermaid.source.length, at: lastMermaid.at } : null,
-						mirror: { enabled: mirrorEnabled, path: mirrorFile() },
-						native: (globalThis as any).__piTernNative?.state?.() ?? null,
-					},
-					null,
-					2,
-				),
+			const base = {
+				env,
+				probe: { status: probe.status, hello: probe.hello },
+				lastMermaid: lastMermaid ? { chars: lastMermaid.source.length, at: lastMermaid.at } : null,
+				mirror: { enabled: mirrorEnabled, path: mirrorFile() },
+				native: (globalThis as any).__piTernNative?.state?.() ?? null,
+			};
+			if (!params.manifest) return asText(JSON.stringify(base, null, 2));
+			const environment = await gatherEnvironment(env);
+			const manifest = buildManifest(
+				{
+					version: PI_TERN_VERSION,
+					directTools: [...DIRECT_TOOLS],
+					deferredTools: DEFERRED_TOOL_NAMES,
+					probe,
+					tspFeatures: probe.hello?.features,
+				},
+				environment,
 			);
+			return asText(JSON.stringify({ ...base, manifest }, null, 2));
 		},
 	});
 
@@ -486,10 +575,7 @@ export default function piTern(pi: ExtensionAPI) {
 			),
 		}),
 		async execute(_id, params) {
-			const env = readTernEnv();
-			if (!env.inTern && process.env.PI_TERN_FORCE !== "1") {
-				throw new Error("tern_diagram needs a Tern pane (TERM_PROGRAM=tern)");
-			}
+			await requireTernCli("tern_diagram");
 			let source = params.source ?? "";
 			if (params.fromTranscript) {
 				if (!lastMermaid) throw new Error("no mermaid block in the conversation yet");
@@ -542,10 +628,8 @@ export default function piTern(pi: ExtensionAPI) {
 			timeoutSeconds: Type.Optional(Type.Number()),
 		}),
 		async execute(_id, params) {
-			if (!readTernEnv().inTern && process.env.PI_TERN_FORCE !== "1") {
-				throw new Error("tern_browser needs a Tern pane (TERM_PROGRAM=tern)");
-			}
 			const env = readTernEnv();
+			await requireTernCli("tern_browser");
 			const raw: Record<string, unknown> = { op: params.op };
 			if (params.url !== undefined) raw.url = params.url;
 			if (params.block !== undefined) raw.block = params.block;
@@ -1238,13 +1322,301 @@ export default function piTern(pi: ExtensionAPI) {
 		},
 	});
 
-	// Prompt-footprint optimization: only the high-frequency core is declared to the
-	// model; everything else is reachable from codemode scripts under one namespace.
-	const directTools = new Set(["tern_status", "tern_run", "tern_browser"]);
+	const chartTool = defineTool({
+		name: "tern_chart",
+		label: "Tern chart",
+		description:
+			"Draw a chart or diagram that renders natively in Tern. Two routes: pass `kind`+`data` (or `labels`+`series`) and pi-tern generates a themed SVG that Tern renders as a native image block; or pass `mermaid` for Tern's own merman renderer (xychart-beta, pie, gantt, gitGraph, timeline, quadrant, sankey, mindmap). Set png=true to also screenshot it so you can see the result yourself, and inline=true (native mode) to append it into this conversation.",
+		parameters: Type.Object({
+			kind: Type.Optional(
+				Type.Union(
+					[
+						Type.Literal("bar"),
+						Type.Literal("hbar"),
+						Type.Literal("line"),
+						Type.Literal("area"),
+						Type.Literal("pie"),
+						Type.Literal("donut"),
+					],
+					{ description: "Chart type (default hbar). bar and hbar both draw labelled horizontal bars." },
+				),
+			),
+			data: Type.Optional(
+				Type.Array(
+					Type.Object({
+						label: Type.String(),
+						value: Type.Number(),
+						color: Type.Optional(Type.String()),
+					}),
+					{ description: "Points for bar/hbar/pie/donut" },
+				),
+			),
+			labels: Type.Optional(Type.Array(Type.String(), { description: "X labels for line/area" })),
+			series: Type.Optional(
+				Type.Array(
+					Type.Object({
+						name: Type.String(),
+						values: Type.Array(Type.Number()),
+						color: Type.Optional(Type.String()),
+					}),
+					{ description: "One line per series for line/area" },
+				),
+			),
+			mermaid: Type.Optional(Type.String({ description: "Render this Mermaid source instead of a data chart" })),
+			title: Type.Optional(Type.String()),
+			subtitle: Type.Optional(Type.String()),
+			unit: Type.Optional(Type.String({ description: "Unit label shown top-right" })),
+			theme: Type.Optional(Type.Union([Type.Literal("dark"), Type.Literal("light")])),
+			width: Type.Optional(Type.Number({ description: "SVG width in px (280-1600, default 720)" })),
+			png: Type.Optional(Type.Boolean({ description: "Also screenshot the figure and return it as an image" })),
+			inline: Type.Optional(
+				Type.Boolean({ description: "Native mode only: append the figure into this conversation (implies png)" }),
+			),
+			placement: Type.Optional(
+				Type.Union([Type.Literal("split"), Type.Literal("tab"), Type.Literal("preview")], {
+					description: "Where to open the file block (default split right)",
+				}),
+			),
+			open: Type.Optional(Type.Boolean({ description: "Open the file block (default true)" })),
+			timeoutSeconds: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params) {
+			await requireTernCli("tern_chart");
+			const wantsPng = params.png === true || params.inline === true;
+			const placement = (params.placement ?? "split") as DiagramPlacement;
+			const shared = {
+				placement,
+				png: wantsPng,
+				open: params.open !== false,
+				title: params.title,
+				timeoutMs: (params.timeoutSeconds ?? 25) * 1000,
+			};
+			if (params.mermaid) {
+				const figure = await renderFigure({ route: "mermaid", source: params.mermaid, ...shared });
+				return figureContent(figure, params.inline === true);
+			}
+			const kind = params.kind ?? "hbar";
+			let spec: ChartSpec;
+			if (kind === "line" || kind === "area") {
+				if (!params.labels?.length || !params.series?.length) {
+					throw new Error("line/area needs labels[] and series[{name, values}]");
+				}
+				spec = { kind, labels: params.labels, series: params.series, title: params.title, subtitle: params.subtitle, unit: params.unit };
+			} else {
+				if (!params.data?.length) throw new Error(`${kind} needs data[{label, value}]`);
+				spec = { kind: kind === "bar" ? "hbar" : kind, data: params.data, title: params.title, subtitle: params.subtitle, unit: params.unit };
+			}
+			const svg = renderChartSvg(spec, { width: params.width, theme: params.theme });
+			const figure = await renderFigure({
+				route: "svg",
+				source: svg,
+				...shared,
+				label: params.title ?? kind,
+			});
+			return figureContent(figure, params.inline === true);
+		},
+	});
+
+	const worktreeTool = defineTool({
+		name: "tern_worktree",
+		label: "Tern worktree",
+		description:
+			"Git worktrees as a workspace: list, create (optionally from origin), remove, prune, and optionally open the new checkout as a Tern tab. Pure git — works with no Tern running, except the optional pane.",
+		parameters: Type.Object({
+			action: Type.String({ description: "list|create|remove|prune|status" }),
+			branch: Type.Optional(Type.String({ description: "Branch for create" })),
+			baseRef: Type.Optional(Type.String({ description: "Where the new branch starts (default HEAD)" })),
+			path: Type.Optional(Type.String({ description: "Target directory (default: a sibling of the repo)" })),
+			cwd: Type.Optional(Type.String({ description: "Repository directory (default cwd)" })),
+			useExistingBranch: Type.Optional(Type.Boolean()),
+			startFromOrigin: Type.Optional(Type.Boolean({ description: "Fetch origin/<baseRef> and branch from it" })),
+			force: Type.Optional(Type.Boolean({ description: "remove: force even with local changes" })),
+			openPane: Type.Optional(Type.Boolean({ description: "create: open the worktree as a Tern tab" })),
+		}),
+		async execute(_id, params) {
+			switch (params.action) {
+				case "list": {
+					const entries = await worktreeList(params.cwd);
+					const enriched = [];
+					for (const entry of entries) {
+						const status = entry.bare ? { dirty: 0 } : await worktreeStatus(entry);
+						enriched.push({ ...entry, ...status });
+					}
+					return asText(JSON.stringify({ root: await repoRoot(params.cwd), worktrees: enriched }, null, 2));
+				}
+				case "create": {
+					if (!params.branch) throw new Error("create needs a branch");
+					const created = await worktreeAdd({
+						cwd: params.cwd,
+						branch: params.branch,
+						baseRef: params.baseRef,
+						path: params.path,
+						useExistingBranch: params.useExistingBranch,
+						startFromOrigin: params.startFromOrigin,
+					});
+					let pane: number | undefined;
+					if (params.openPane) pane = await openWorktreePane(created.path).catch(() => undefined);
+					return asText(JSON.stringify({ ...created, pane, hint: defaultWorktreePath(created.root, params.branch) }, null, 2));
+				}
+				case "remove": {
+					if (!params.path) throw new Error("remove needs a path");
+					return asText(await worktreeRemove({ cwd: params.cwd, path: params.path, force: params.force }));
+				}
+				case "prune":
+					return asText(await worktreePrune(params.cwd));
+				case "status": {
+					const entries = await worktreeList(params.cwd);
+					const target = params.path ? entries.find((entry) => entry.path.endsWith(params.path as string)) : entries[0];
+					if (!target) throw new Error("no such worktree");
+					return asText(JSON.stringify({ ...target, ...(await worktreeStatus(target)) }, null, 2));
+				}
+				default:
+					throw new Error(`unknown action '${params.action}' (list|create|remove|prune|status)`);
+			}
+		},
+	});
+
+	const prTool = defineTool({
+		name: "tern_pr",
+		label: "Tern PR",
+		description:
+			"Pull-request state through the GitHub CLI: summary (checks collapsed to counts plus failing names), list, comments/reviews, watch (runs `gh pr checks --watch` in a visible Tern pane and waits), open (Tern browser). Readiness is reported as human-readable.",
+		parameters: Type.Object({
+			action: Type.String({ description: "summary|list|comments|watch|open|status" }),
+			selector: Type.Optional(Type.String({ description: "PR number, URL or branch (default: the current branch's PR)" })),
+			cwd: Type.Optional(Type.String()),
+			limit: Type.Optional(Type.Number()),
+			state: Type.Optional(Type.String({ description: "list: open|closed|merged|all" })),
+			timeoutSeconds: Type.Optional(Type.Number({ description: "watch: how long to wait (default 900)" })),
+			inPane: Type.Optional(Type.Boolean({ description: "watch: run in a visible Tern pane (default true)" })),
+		}),
+		async execute(_id, params) {
+			switch (params.action) {
+				case "status": {
+					const gh = await ghStatus(true);
+					return asText(JSON.stringify(gh, null, 2));
+				}
+				case "summary": {
+					const summary = await prSummary({ cwd: params.cwd, selector: params.selector });
+					return asText(JSON.stringify({ verdict: prVerdict(summary), ...summary }, null, 2));
+				}
+				case "list":
+					return asText(JSON.stringify(await prList({ cwd: params.cwd, limit: params.limit, state: params.state }), null, 2));
+				case "comments": {
+					const comments = await prComments({ cwd: params.cwd, selector: params.selector, limit: params.limit });
+					return asText(
+						comments.length === 0
+							? "no comments or reviews"
+							: comments.map((c) => `[${c.kind}] ${c.author} ${c.createdAt.slice(0, 16)}\n${c.body}`).join("\n\n"),
+					);
+				}
+				case "watch": {
+					const watched = await prWatch({
+						cwd: params.cwd,
+						selector: params.selector,
+						timeoutMs: (params.timeoutSeconds ?? 900) * 1000,
+						inPane: params.inPane,
+					});
+					const verdict = watched.summary ? prVerdict(watched.summary) : "checks finished";
+					return asText(
+						JSON.stringify(
+							{
+								verdict,
+								pane: watched.pane,
+								exited: watched.exited,
+								timedOut: watched.timedOut,
+								failing: watched.summary?.checks.failingNames ?? [],
+								pending: watched.summary?.checks.pendingNames ?? [],
+								output: watched.output.slice(-4000),
+							},
+							null,
+							2,
+						),
+					);
+				}
+				case "open": {
+					const summary = await prSummary({ cwd: params.cwd, selector: params.selector });
+					if (!summary.url) throw new Error("no PR url to open");
+					const block = await openPrInBrowser(readTernEnv(), summary.url);
+					return asText(JSON.stringify({ verdict: prVerdict(summary), url: summary.url, block }, null, 2));
+				}
+				default:
+					throw new Error(`unknown action '${params.action}' (summary|list|comments|watch|open|status)`);
+			}
+		},
+	});
+
+	const fleetTool = defineTool({
+		name: "tern_fleet",
+		label: "Tern fleet",
+		description:
+			"Run work in Tern panes and treat each pane as a thread: spawn (a `pi -p` task, an interactive pi, or any command in a visible pane), list with liveness, send (steer text or keys into a pane), read, wait for exit, stop. Works from anywhere the Tern daemon answers — no pane of your own required.",
+		parameters: Type.Object({
+			action: Type.String({ description: "spawn|list|send|read|wait|stop" }),
+			task: Type.Optional(Type.String({ description: "spawn: the prompt or task text" })),
+			name: Type.Optional(Type.String({ description: "spawn: short label used in listings and the task file" })),
+			mode: Type.Optional(Type.Union([Type.Literal("print"), Type.Literal("interactive"), Type.Literal("command")])),
+			command: Type.Optional(Type.String({ description: "spawn mode=command: the shell command to run" })),
+			model: Type.Optional(Type.String({ description: "spawn: model id passed as --model" })),
+			cwd: Type.Optional(Type.String()),
+			worktree: Type.Optional(Type.String({ description: "spawn: run in this worktree directory" })),
+			block: Type.Optional(Type.String({ description: "Target pane block id for send/read/wait/stop" })),
+			text: Type.Optional(Type.String({ description: "send: text to type" })),
+			submit: Type.Optional(Type.Boolean({ description: "send: press Enter after typing (default true)" })),
+			timeoutSeconds: Type.Optional(Type.Number()),
+			read: Type.Optional(Type.Boolean({ description: "list: also capture a short tail of each live pane" })),
+			tailLines: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params) {
+			await requireTernCli("tern_fleet");
+			switch (params.action) {
+				case "spawn": {
+					if (!params.task && params.mode !== "command") throw new Error("spawn needs a task (or mode=command with a command)");
+					const agentArgs = params.model ? ["--model", params.model] : undefined;
+					const spawned = await fleetSpawn({
+						task: params.task ?? params.command ?? "",
+						name: params.name,
+						cwd: params.cwd,
+						mode: params.mode,
+						command: params.command,
+						agentArgs,
+						worktree: params.worktree,
+					});
+					return asText(
+						JSON.stringify({ block: spawned.block, ...spawned.member, hint: "tern_fleet read/wait with this block id" }, null, 2),
+					);
+				}
+				case "list":
+					return asText(JSON.stringify(await fleetStatus({ read: params.read, tailLines: params.tailLines }), null, 2));
+				case "send": {
+					if (!params.block || params.text === undefined) throw new Error("send needs block and text");
+					return asText(await fleetSend(params.block, params.text, { submit: params.submit }));
+				}
+				case "read": {
+					if (!params.block) throw new Error("read needs a block");
+					return asText(await fleetRead(params.block));
+				}
+				case "wait": {
+					if (!params.block) throw new Error("wait needs a block");
+					const waited = await fleetWait(params.block, params.timeoutSeconds ?? 300);
+					return asText(JSON.stringify({ exited: waited.exited, timedOut: waited.timedOut, tail: waited.output.slice(-6000) }, null, 2));
+				}
+				case "stop": {
+					if (!params.block) throw new Error("stop needs a block");
+					return asText(await fleetStop(params.block));
+				}
+				default:
+					throw new Error(`unknown action '${params.action}' (spawn|list|send|read|wait|stop)`);
+			}
+		},
+	});
+
+	const directTools = DIRECT_TOOLS;
 	const ternNamespace = { name: "tern", description: "Tern terminal integration (sessions, browser, data, mirrors)." };
 	for (const tool of [
 		statusTool,
 		diagramTool,
+		chartTool,
 		browserTool,
 		captureTool,
 		panesTool,
@@ -1263,6 +1635,9 @@ export default function piTern(pi: ExtensionAPI) {
 		notebookTool,
 		settingsTool,
 		uiTestTool,
+		worktreeTool,
+		prTool,
+		fleetTool,
 	]) {
 		const name = (tool as { name?: string }).name ?? "";
 		pi.registerTool(directTools.has(name) ? tool : ({ ...tool, exposure: "deferred", namespace: ternNamespace } as unknown as typeof tool));
@@ -1271,7 +1646,8 @@ export default function piTern(pi: ExtensionAPI) {
 	// ── Command ────────────────────────────────────────────────────────────
 
 	pi.registerCommand("tern", {
-		description: "Tern integration: status | db | doc | board | run | ask | schedule | bridge | mirror | diagram | browser | settings",
+		description:
+			"Tern integration: status | capabilities | db | doc | board | run | ask | schedule | bridge | mirror | diagram | chart | browser | fleet | pr | worktree | settings",
 		handler: async (args: string, ctx: any) => {
 			const trimmed = (args ?? "").trim();
 			const [sub = "status"] = trimmed.split(/\s+/);
@@ -1280,6 +1656,26 @@ export default function piTern(pi: ExtensionAPI) {
 					case "status":
 					case "doctor": {
 						ctx.ui.notify(describeProbe(), "info");
+						return;
+					}
+					case "capabilities":
+					case "contract": {
+						const environment = await gatherEnvironment(readTernEnv());
+						ctx.ui.notify(
+							renderManifest(
+								buildManifest(
+									{
+										version: PI_TERN_VERSION,
+										directTools: [...DIRECT_TOOLS],
+										deferredTools: DEFERRED_TOOL_NAMES,
+										probe,
+										tspFeatures: probe.hello?.features,
+									},
+									environment,
+								),
+							),
+							"info",
+						);
 						return;
 					}
 					case "native": {

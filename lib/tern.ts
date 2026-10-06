@@ -66,6 +66,68 @@ export function assertTern(env: TernEnv, what: string): void {
 	}
 }
 
+/**
+ * Availability of the *Tern daemon* (not a pane). Every CLI-backed feature
+ * (`tern open`, `tern browser`, `tern capture`, `tern send`, `tern new`) works
+ * from anywhere — a T3-hosted agent, a cron job, a plain terminal — as long as a
+ * Tern window or daemon is running. Only surface/probe/relay features need a pane.
+ */
+export interface TernAvailability {
+	inPane: boolean;
+	cli: boolean;
+	version?: string;
+	reason?: string;
+}
+
+let availabilityCache: { at: number; value: TernAvailability } | undefined;
+
+/** Probe `tern --version` (cached for a few seconds so per-call cost is nil). */
+export async function ternAvailable(refresh = false): Promise<TernAvailability> {
+	const now = Date.now();
+	if (!refresh && availabilityCache && now - availabilityCache.at < 5000) return availabilityCache.value;
+	const inPane = readTernEnv().inTern;
+	const result = await runTern(["--version"], 4000);
+	const version = result.stdout.trim() || result.stderr.trim();
+	const cli = result.code === 0 && /tern/i.test(version);
+	const value: TernAvailability = {
+		inPane,
+		cli,
+		version: version || undefined,
+		reason: cli
+			? undefined
+			: insideMultiplexer()
+				? "inside tmux/screen/zellij, where Tern panes cannot be reached"
+				: "the `tern` command did not answer on PATH",
+	};
+	availabilityCache = { at: now, value };
+	return value;
+}
+
+/** Throw a helpful error unless the Tern CLI answers (pane not required). */
+export async function requireTernCli(what: string): Promise<TernAvailability> {
+	if (process.env.PI_TERN_FORCE === "1") return { inPane: readTernEnv().inTern, cli: true };
+	const availability = await ternAvailable();
+	if (!availability.cli) {
+		throw new Error(
+			`${what} needs a running Tern: ${availability.reason ?? "unavailable"}. ` +
+				"Start Tern (or a `tern serve` daemon) — a Tern pane is not required. " +
+				"Set PI_TERN_FORCE=1 to bypass this check.",
+		);
+	}
+	return availability;
+}
+
+/** True when a Tern pane is required and absent (probe, relay, surface writes). */
+export function paneRequired(what: string): void {
+	const env = readTernEnv();
+	if (!env.inTern && process.env.PI_TERN_FORCE !== "1") {
+		throw new Error(
+			`${what} needs a Tern pane (TERM_PROGRAM=tern) — it uses this pane's pty, not the daemon. ` +
+				"Run it from a Tern pane, or use the CLI-backed tools (tern_diagram, tern_browser, tern_capture, tern_run, tern_fleet) which work anywhere Tern is running.",
+		);
+	}
+}
+
 /** tmux/screen/zellij swallow APC strings, so the TSP handshake cannot work there. */
 export function insideMultiplexer(): boolean {
 	return Boolean(process.env.TMUX || process.env.STY || process.env.ZELLIJ);
