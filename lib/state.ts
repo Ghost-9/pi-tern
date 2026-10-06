@@ -12,6 +12,8 @@ export interface PiTernState {
 	control?: string;
 	/** Remembered Tern block kind for a pane, so the native-surface check costs nothing on restart. */
 	paneKind?: { pane: string; kind: string; at: number };
+	/** When the "this is a terminal block" explanation was last shown, so it is said once, not per pane. */
+	blockNotice?: { kind: string; at: number };
 }
 
 export function stateFile(): string {

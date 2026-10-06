@@ -132,20 +132,34 @@ async function askBlockKind(paneId, timeoutMs = KIND_TIMEOUT_MS) {
 }
 
 /** Printed BEFORE pi starts, so it is readable at once and nothing has to be undone. */
+/**
+ * The one-line explanation for a non-agent block, said at most once a month.
+ *
+ * It used to be five lines on every launch, which is noise: the user knows after the first time. The
+ * flag lives in the same `state.json` the extension uses, so the two halves agree and neither repeats
+ * what the other already said.
+ */
 function nonAgentBlockNotice(kind) {
-	return [
-		"",
-		`pi-tern: this is a Tern *${kind}* block, so native surfaces would not be displayed here.`,
-		"Tern draws a TSP surface only in an agent block; a terminal block accepts the frames and",
-		"shows nothing, which is why this used to come up blank. Starting pi's own interface instead.",
-		"",
-		"To get native surfaces:",
-		"  • open an agent block — the tab's + menu, then an agent block",
-		"  • or point Tern's agent_command at pi-tern, in ~/Library/Application Support/Tern/settings.json:",
-		`      "agent_command": "${process.argv[1] ?? "pi-tern"}"`,
-		"  • or force it anyway:  PI_TERN_NATIVE_BLOCK=force pi-tern",
-		"",
-	].join("\n");
+	const stateFile = path.join(path.dirname(mailboxDir()), "state.json");
+	try {
+		const state = JSON.parse(readFileSync(stateFile, "utf8"));
+		if (state.blockNotice && Date.now() - Number(state.blockNotice.at || 0) < 30 * 24 * 3600_000) return "";
+	} catch {
+		/* no state yet, or unreadable: fall through and say it once */
+	}
+	try {
+		let state = {};
+		try {
+			state = JSON.parse(readFileSync(stateFile, "utf8"));
+		} catch {
+			/* start fresh */
+		}
+		state.blockNotice = { kind, at: Date.now() };
+		writeFileSync(stateFile, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+	} catch {
+		/* best effort: a missing flag means one extra line, never a failure */
+	}
+	return `\npi-tern: Tern *${kind}* block — starting pi's own interface (native surfaces need an agent block). One command fixes it: run /tern agent-setup inside pi, or set "new_blocks": "Agent" and "agent_command": "${process.argv[1] ?? "pi-tern"}" in Tern's settings.json.\n`;
 }
 
 function probe(timeoutMs = 700) {

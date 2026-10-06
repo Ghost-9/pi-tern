@@ -1,5 +1,51 @@
 # Changelog
 
+## 1.1.7 — 2026-10-06
+
+**The block notice is said once, and it now comes with the command that fixes it.**
+
+### The report
+
+The 1.1.6 notice appeared on every launch:
+
+> Tern *terminal* block: native surfaces need an agent block — open one (or set Tern's
+> agent_command to pi-tern) to get them.
+
+Two faults. It was **repeated**: the "already told them" flag did not exist, and the pane-kind cache
+is keyed by pane id — which is new every launch — so every new terminal block re-notified. And it was
+**not actionable**: "open one" did not say how, and the advice was produced without checking what Tern
+actually offers.
+
+### What Tern actually offers (from its own settings docs)
+
+Two keys decide this, and neither was named in the notice:
+
+| Key | Tern's own description | Value that makes native surfaces work |
+| --- | --- | --- |
+| `new_blocks` | "what new tabs and splits open" | `"Agent"` |
+| `agent_command` | "what a block runs: the login shell, or this" (defaults to `omp`) | the pi-tern launcher |
+
+### `/tern agent-setup`
+
+One command applies both: it backs up `~/Library/Application Support/Tern/settings.json`, writes the
+two keys, and reports exactly what changed (including the previous values). Tern watches that file and
+reloads on save, so the next tab is an agent block running pi-tern with native surfaces. If the write
+fails, the error names both keys and the file so they can be set by hand.
+
+### Said once, by both halves
+
+The launcher and the extension now share one flag in `state.json` (`blockNotice`), so whichever speaks
+first, the other stays quiet — for 30 days, not per pane. `PI_TERN_QUIET_BLOCK_NOTICE=1` silences it
+entirely, and `/tern diagnose` always reports the block kind on request. The launcher's five-line wall
+is now one line.
+
+Verified: run 1 in a terminal block writes the flag, run 2 does not re-emit; and the mailbox round trip
+that answers the question is confirmed working end to end (`paneKind: {"pane":"7","kind":"terminal"}`
+in `state.json`).
+
+Gate: 80/80 unit · 7/7 compat · 19/19 live · plugin loads.
+
+
 ## 1.1.6 — 2026-10-06
 
 **Startup latency fixed: the block-kind decision moved *before* native mode, and the default flipped

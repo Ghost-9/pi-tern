@@ -2,7 +2,7 @@
  * Tern environment detection and CLI helpers.
  */
 import { execFile } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -64,6 +64,54 @@ export function scratchDir(): string {
 	mkdirSync(dir, { recursive: true });
 	scratchDirCache = { home, dir };
 	return dir;
+}
+
+/**
+ * Tern's settings file, which is where agent blocks are configured.
+ *
+ * Two keys decide whether native surfaces can appear at all, and they are what makes a
+ * "terminal block" notice actionable instead of annoying:
+ *   `new_blocks`    — "what new tabs and splits open": `Shell` or `Agent`
+ *   `agent_command` — "what a block runs": the login shell, or this command (defaults to `omp`)
+ * Set both and every new tab is an *agent* block running pi-tern — the only kind of block in which
+ * Tern draws a TSP surface.
+ */
+export function ternSettingsPath(): string {
+	return path.join(os.homedir(), "Library", "Application Support", "Tern", "settings.json");
+}
+
+export function readTernSettings(): Record<string, unknown> {
+	try {
+		return JSON.parse(readFileSync(ternSettingsPath(), "utf8")) as Record<string, unknown>;
+	} catch {
+		return {};
+	}
+}
+
+/**
+ * Make pi-tern the agent Tern starts, so new tabs are agent blocks and native surfaces display.
+ * Backs the file up first and reports exactly what changed; Tern reloads on save, so no restart.
+ */
+export function setTernAgentDefaults(agentCommand: string): { file: string; backup: string; changed: string[] } {
+	const file = ternSettingsPath();
+	const before = readFileSync(file, "utf8");
+	const current = JSON.parse(before) as Record<string, unknown>;
+	const backup = `${file}.bak-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+	writeFileSync(backup, before, "utf8");
+
+	const changed: string[] = [];
+	const previousNewBlocks = String(current.new_blocks ?? "unset");
+	if (current.new_blocks !== "Agent") {
+		current.new_blocks = "Agent";
+		changed.push(`new_blocks: ${JSON.stringify(previousNewBlocks)} → "Agent"`);
+	}
+	const previousAgent = String(current.agent_command ?? "unset");
+	if (current.agent_command !== agentCommand) {
+		current.agent_command = agentCommand;
+		changed.push(`agent_command: ${JSON.stringify(previousAgent)} → ${JSON.stringify(agentCommand)}`);
+	}
+	writeFileSync(file, `${JSON.stringify(current, null, 2)}\n`, "utf8");
+	return { file, backup, changed };
 }
 
 export function assertTern(env: TernEnv, what: string): void {

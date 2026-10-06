@@ -50,11 +50,11 @@ import { mailbox, paneKind } from "./lib/mailbox.ts";
 import { relayPing } from "./lib/relay.ts";
 import { runShellInTern } from "./lib/run.ts";
 import { loadState, saveState } from "./lib/state.ts";
-import { insideMultiplexer, readTernEnv, requireTernCli, runTern, scratchDir, type TernEnv } from "./lib/tern.ts";
+import { insideMultiplexer, readTernEnv, requireTernCli, runTern, scratchDir, setTernAgentDefaults, ternSettingsPath, type TernEnv } from "./lib/tern.ts";
 import { describeRefs, linkifyFileRefs, parseFileRefs, type FileRef } from "./lib/refs.ts";import { cleanShellBlock, extractMermaids, extractShellBlocks, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
 import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, normalizeOsc877, type TspHello } from "./lib/tsp.ts";
 
-const PI_TERN_VERSION = "1.1.6";
+const PI_TERN_VERSION = "1.1.7";
 
 /** The only tools declared to the model; everything else is `deferred` (no schema, no listing). */
 const DIRECT_TOOLS = new Set(["tern_status", "tern_run", "tern_browser"]);
@@ -413,11 +413,16 @@ async function ensureNativeSurfaceIsDisplayable(): Promise<string | undefined> {
 	if (!paneId) return undefined;
 
 	// In a terminal block the launcher ran pi's own interface, so there is no surface to hand back —
-	// but the user still deserves one explanation of why native surfaces are missing.
-	const noteFor = (kind: string): string | undefined =>
-		sink?.fallback && sink.state?.().active !== false
-			? fallbackNotice(sink, kind)
-			: `Tern *${kind}* block: native surfaces need an agent block — open one (or set Tern's agent_command to pi-tern) to get them.`;
+	// but the user deserves exactly ONE explanation, not one per pane. Pane ids are new every launch,
+	// so the "already told them" flag has to be global rather than per pane.
+	const noticed = loadState().blockNotice;
+	const alreadyTold = Boolean(noticed && Date.now() - noticed.at < 30 * 24 * 3600_000);
+	const noteFor = (kind: string): string | undefined => {
+		if (sink?.fallback && sink.state?.().active !== false) return fallbackNotice(sink, kind);
+		if (alreadyTold || process.env.PI_TERN_QUIET_BLOCK_NOTICE === "1") return undefined;
+		saveState({ blockNotice: { kind, at: Date.now() } });
+		return `Tern *${kind}* block — native surfaces need an agent block. Run /tern agent-setup to make new tabs agent blocks running pi-tern (it changes two Tern settings and writes a backup first).`;
+	};
 
 	// A pane's kind never changes, so one answer is enough for its lifetime — and it is worth keeping
 	// on disk, because the round trip is the whole startup cost of this check.
@@ -2060,7 +2065,7 @@ export default function piTern(pi: ExtensionAPI) {
 
 	pi.registerCommand("tern", {
 		description:
-			"Tern integration: status | capabilities | files | browser | run | mirror | diagram | diagnose | restore | native | bridge (see /tern <sub> --help via the tools; chart, fleet, pr and worktree are tools, not subcommands)",
+			"Tern integration: status | capabilities | agent-setup | files | browser | run | mirror | diagram | diagnose | restore | native | bridge",
 		handler: async (args: string, ctx: any) => {
 			const trimmed = (args ?? "").trim();
 			const [sub = "status"] = trimmed.split(/\s+/);
@@ -2128,6 +2133,27 @@ export default function piTern(pi: ExtensionAPI) {
 							),
 							"info",
 						);
+						return;
+					}
+					case "agent-setup": {
+						// The whole fix for the terminal-block notice, as one command: Tern needs new blocks to be
+						// agent blocks running pi-tern, because that is the only kind that draws a surface.
+						const launcher = process.env.PI_TERN_LAUNCHER || process.argv[1] || "pi-tern";
+						try {
+							const result = setTernAgentDefaults(launcher);
+							ctx.ui.notify(
+								result.changed.length > 0
+									? `Tern settings updated (${result.file}):\n${result.changed.join("\n")}\n\nBackup: ${result.backup}\nOpen a new tab — it will be an agent block running pi-tern, with native surfaces.`
+									: `Already set up: new blocks are agent blocks running ${launcher}. Open a new tab to get native surfaces.`,
+								"info",
+							);
+						} catch (error) {
+							ctx.ui.notify(
+								`could not update Tern settings: ${error instanceof Error ? error.message : String(error)}. ` +
+									`Set these two by hand in ${ternSettingsPath()}: "new_blocks": "Agent", "agent_command": ${JSON.stringify(launcher)}`,
+								"warn",
+							);
+						}
 						return;
 					}
 					case "files": {

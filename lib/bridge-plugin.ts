@@ -3,7 +3,7 @@
 export const BRIDGE_PLUGIN_TOML = `schema = 1
 id = "pi-bridge"
 name = "pi-bridge"
-version = "1.1.6"
+version = "1.1.7"
 description = "Shows the pi-tern dashboard, answers batched data requests (SQLite, documents, boards, settings) and exposes pi status to Carly."
 window = "window.luau"
 `;
@@ -21,7 +21,7 @@ local ABOUT = table.concat({
 local REFRESH_MS = 3000
 local MAILBOX_MS = 250
 local MAILBOX_FAST_MS = 100
-local PLUGIN_VERSION = "1.1.6"
+local PLUGIN_VERSION = "1.1.7"
 local state = {
 	pane = nil,
 	armed = false,
