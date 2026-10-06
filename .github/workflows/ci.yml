@@ -43,6 +43,20 @@ jobs:
       - name: Generated Luau source is intact
         run: node scripts/check-luau-source.mjs
 
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --no-audit --no-fund
+      # The artifact, not the repository. Every other job here runs against the checkout, so every
+      # other job is silent about the tarball - which is how 1.1.8 shipped five files short, with a
+      # `test` script naming ten files and shipping none of them.
+      - name: Pack, unpack, install and run the published package
+        run: node scripts/check-package.mjs
+
   compat:
     runs-on: ubuntu-latest
     steps:

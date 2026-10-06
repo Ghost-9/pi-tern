@@ -62,6 +62,8 @@ jobs:
         run: node scripts/check-luau-source.mjs
       - name: Compatibility matrix (static tier)
         run: node native/compat.mjs --static
+      - name: The published artifact, not the repository
+        run: node scripts/check-package.mjs
       - name: Publish to npm
         if: startsWith(github.ref_name, 'v')
         # npm trusted publishing (OIDC) must be configured for this repo/workflow.

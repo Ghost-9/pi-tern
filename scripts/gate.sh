@@ -5,17 +5,18 @@
 #   1. types            tsc --noEmit  (strict; pi + typebox resolved from node_modules)
 #   2. lint             oxlint (TS + the native/ launcher, which is plain .mjs)
 #   3. native decls     native/*.d.mts must match what the .mjs modules actually export
-#   4. luau source      the generated Luau is intact before anything imports the module
-#   5. render proof     was a native surface actually DISPLAYED, or only accepted? (see below)
-#   6. unit tests       the SAME file list `npm test` runs — one list, defined once below
-#   7. stock fallback   the launcher must be invisible outside Tern (compat matrix)
-#   8. plugin loads     a window start is what compiles the Luau; `plugin reload` cannot
-#   9. live surface     the CLI-backed features must work with no Tern pane
+#   4. package          the published tarball, packed and run — not the repository
+#   5. luau source      the generated Luau is intact before anything imports the module
+#   6. render proof     was a native surface actually DISPLAYED, or only accepted? (see below)
+#   7. unit tests       the SAME file list `npm test` runs — one list, defined once below
+#   8. stock fallback   the launcher must be invisible outside Tern (compat matrix)
+#   9. plugin loads     a window start is what compiles the Luau; `plugin reload` cannot
+#  10. live surface     the CLI-backed features must work with no Tern pane
 #
 # Every step reports a count. A skipped step says SKIP and is counted separately, so a green
 # run can never be read as "checked everything": the last line is `GATE PASSED (N run, M skip)`.
 #
-#   PI_TERN_SKIP_LIVE=1   skip the steps that need a running Tern (8, 9); costs ~30 s
+#   PI_TERN_SKIP_LIVE=1   skip the steps needing a running Tern or the network (4, 8, 9); costs ~40 s
 #   PI_TERN_REQUIRE_ALL=1 turn any skip into a failure — use this to gate a release
 #
 # The full compat matrix (7 checks) spends model calls, so it needs credentials and a working
@@ -36,6 +37,7 @@ UNIT_TESTS=(
 	test/version.test.ts
 	test/handshake.test.ts
 	test/fleet-prune.test.ts
+	test/package.test.ts
 	test/native-sink.test.ts
 )
 
@@ -97,6 +99,16 @@ step "lint" "$LOG/lint.log" ./node_modules/.bin/oxlint index.ts lib test scripts
 # names an export the module does not have type-checks green against an API that is not there,
 # which is how the strict pass in 1.1.8 would have been able to lie.
 step "native declarations" "$LOG/nativetypes.log" node scripts/check-native-types.mjs
+
+# The published artifact, not the repository. CI checks out the repo, so everything else here is
+# silent about the tarball - which is how 1.1.8 shipped five files short with a `test` script naming
+# ten files and shipping none of them. Needs a network for its install step, so it skips loudly
+# rather than silently, and PI_TERN_SKIP_LIVE=1 skips it with the other network-dependent steps.
+if [ "${PI_TERN_SKIP_LIVE:-0}" != "1" ]; then
+	step "published package" "$LOG/package.log" node scripts/check-package.mjs
+else
+	skip "published package" "PI_TERN_SKIP_LIVE=1 (it installs from npm)"
+fi
 
 # Runs before the unit tests on purpose: a bare backtick in the Luau breaks the TypeScript module
 # itself, so a test inside it could never run to report the problem. This reads the file as text.

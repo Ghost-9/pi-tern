@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.1.10 - 2026-10-06
+
+**Verify the artifact, not the repository.**
+
+`npm pack pi-tern@1.1.8` produced a tarball missing `lib/handshake.mjs`, `lib/toolresults.ts`,
+`lib/tools-plugin.ts`, `scripts/render-proof.mjs` and `scripts/check-luau-source.mjs`, with a `test`
+script naming eight files and shipping **none** of them: `scripts/gate.sh` was included and `test/`
+was not, so the shipped package could not run its own gate.
+
+Nothing caught it, because **CI checks out the repository**. Every check said the package was fine,
+and every check was true of the source and silent about the artifact — the same failure as the
+v1.1.0-tagged run publishing v1.1.8: the artifact and the source drifted apart, and only someone
+looking at the artifact would notice.
+
+- **`scripts/check-package.mjs`** packs the real tarball, unpacks it, installs it, and runs the
+  shipped suite inside it. It is a gate step and a CI job, so the thing a user receives is what gets
+  tested. Verified by removing `test` from `files` and watching it fail.
+- **`test/package.test.ts`** asserts that every path a shipped script *names* is actually shipped —
+  the cheap, source-only version of the same guarantee, so it runs on every test invocation.
+- `package.json` `files` now includes `test` and `tsconfig.json`, which is what lets a user verify
+  the package they installed. Given that a bad tarball shipped twice today, being able to check it
+  is the point.
+
+One of the four new tests reads `.github/workflows/release.yml`, which is not shipped. It skips
+rather than failing when the file is absent, and says why: failing would make the shipped suite
+unrunnable and passing silently would claim a check that did not run.
+
+Gate: **134/134 unit - 10/10 gate steps - 7/7 compat - 19/19 live - strict typecheck clean**, and
+**134/134 from the packed tarball**.
+
 ## 1.1.9 - 2026-10-06
 
 **The npm 1.1.8 tarball was a partial snapshot, and this is the honest re-release.**
