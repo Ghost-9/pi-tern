@@ -1,5 +1,53 @@
 # Changelog
 
+## 1.1.6 — 2026-10-06
+
+**Startup latency fixed: the block-kind decision moved *before* native mode, and the default flipped
+to the interface that always works.**
+
+### The report
+
+"pi-tern takes a lot of time to actually render on Tern" — with the 1.1.5 notice appearing after a
+long wait. Measured cause: `pane.kind` was asked **after** pi had already gone native, with a 6 s
+timeout, so when no Tern window answered the mailbox the full **4,013 ms** elapsed (measured, one
+request, `ok=false`) before the fallback ran. On top of pi's own ~5 s start, that is ten seconds of
+blank pane in the case that then gets thrown away anyway.
+
+### The fix — ask first, and only then decide
+
+- **`native/pi-tern.mjs`** now asks the block kind *before* spawning pi, using the pi-bridge mailbox
+  directly (it is only two JSON files in a shared directory, so the launcher needs neither pi nor the
+  extension). Bounded by `PI_TERN_KIND_TIMEOUT_MS` (600 ms default), with a stale-response guard and
+  the request file always cleaned up.
+- **Native mode is now the special case, not the default.** If the kind is not `agent` — a terminal
+  block, an unresponsive mailbox, an unknown kind — pi starts in its own interface, which works
+  everywhere. Native mode is only entered when Tern has actually said it will display the surface.
+- The notice is printed **before** pi starts, so it is readable at once and nothing has to be undone.
+- `PI_TERN_NATIVE_BLOCK=force` still forces native mode; `PI_TERN_SKIP_KIND_CHECK=1` skips the ask.
+
+### The extension side
+
+- The check now runs only when the launcher did not already decide (`PI_TERN_BLOCK_KIND`), waits
+  **1200 ms instead of 6000**, and **remembers the answer per pane** in `state.json` — a pane's kind
+  never changes, so on a restart the check costs nothing at all.
+- In a terminal block, where there is no surface to hand back, the user still gets one explanation
+  through pi's own UI rather than silence.
+
+### Measured
+
+| Run | Launcher | First content | Blank period |
+| --- | --- | --- | --- |
+| before | 1.1.5 (check after native) | never within 20 s | the whole time |
+| after | 1.1.6 (decide first) | **917 ms** | none |
+
+`tern capture` is not a reliable timer for a pane that has a surface — it reports nothing whether or
+not the pane is drawn — so the "after" figure comes from a run where **no surface was created at
+all**, which is precisely the change. A visual confirmation in a terminal block is the outstanding
+check, and it needs the Tern window in front.
+
+Gate: 80/80 unit · 7/7 compat · 19/19 live · plugin loads.
+
+
 ## 1.1.5 — 2026-10-06
 
 **The block-kind trap, fixed at the root — and the reason the previous release looked broken.**

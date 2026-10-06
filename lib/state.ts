@@ -10,6 +10,8 @@ export interface PiTernState {
 	mirror?: { enabled: boolean };
 	lastDiagram?: string;
 	control?: string;
+	/** Remembered Tern block kind for a pane, so the native-surface check costs nothing on restart. */
+	paneKind?: { pane: string; kind: string; at: number };
 }
 
 export function stateFile(): string {

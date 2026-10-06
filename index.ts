@@ -54,7 +54,7 @@ import { insideMultiplexer, readTernEnv, requireTernCli, runTern, scratchDir, ty
 import { describeRefs, linkifyFileRefs, parseFileRefs, type FileRef } from "./lib/refs.ts";import { cleanShellBlock, extractMermaids, extractShellBlocks, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
 import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, normalizeOsc877, type TspHello } from "./lib/tsp.ts";
 
-const PI_TERN_VERSION = "1.1.5";
+const PI_TERN_VERSION = "1.1.6";
 
 /** The only tools declared to the model; everything else is `deferred` (no schema, no listing). */
 const DIRECT_TOOLS = new Set(["tern_status", "tern_run", "tern_browser"]);
@@ -402,23 +402,52 @@ async function ensureNativeSurfaceIsDisplayable(): Promise<string | undefined> {
 	const sink = (globalThis as {
 		__piTernNative?: { state?: () => { active?: boolean }; fallback?: (reason: string) => boolean };
 	}).__piTernNative;
-	if (!sink?.fallback || sink.state?.().active === false) return undefined;
 	if (process.env.PI_TERN_SKIP_KIND_CHECK === "1") return undefined;
+	// The launcher already asked before starting pi: `agent` means the surface will be displayed, and
+	// anything else would not have started native mode at all. Either way there is nothing to check.
+	if (process.env.PI_TERN_BLOCK_KIND === "agent" || process.env.PI_TERN_BLOCK_KIND === "forced") {
+		return undefined;
+	}
 	const env = readTernEnv();
 	const paneId = env.paneId ?? process.env.TERN_PANE;
 	if (!paneId) return undefined;
+
+	// In a terminal block the launcher ran pi's own interface, so there is no surface to hand back —
+	// but the user still deserves one explanation of why native surfaces are missing.
+	const noteFor = (kind: string): string | undefined =>
+		sink?.fallback && sink.state?.().active !== false
+			? fallbackNotice(sink, kind)
+			: `Tern *${kind}* block: native surfaces need an agent block — open one (or set Tern's agent_command to pi-tern) to get them.`;
+
+	// A pane's kind never changes, so one answer is enough for its lifetime — and it is worth keeping
+	// on disk, because the round trip is the whole startup cost of this check.
+	const remembered = loadState().paneKind;
+	if (remembered && remembered.pane === paneId) {
+		return remembered.kind === "agent" ? undefined : noteFor(remembered.kind);
+	}
+
 	let kind: string | undefined;
 	try {
-		kind = (await paneKind(paneId))?.kind;
+		// Short on purpose: this is a courtesy check, not a dependency. With no window answering, the old
+		// 6 s timeout was six seconds of blank pane before the fallback — the reported "pi-tern takes
+		// ages to render".
+		kind = (await paneKind(paneId, 1200))?.kind;
 	} catch {
-		return undefined; // a mailbox that cannot answer must never block a session
+		return undefined; // a mailbox that cannot answer must never block or delay a session
 	}
-	if (kind === undefined || kind === "agent") return undefined;
+	if (kind === undefined) return undefined;
+	saveState({ paneKind: { pane: paneId, kind, at: Date.now() } });
+	if (kind === "agent") return undefined;
+	return noteFor(kind);
+}
+
+/** Hand the terminal back to pi and return what to tell the user. */
+function fallbackNotice(sink: { fallback?: (reason: string) => boolean }, kind: string): string | undefined {
 	const reason =
-		`native surfaces are not displayed in a Tern *${kind}* block (only an agent block draws them). ` +
-		"Falling back to pi's own interface.";
+		`native surfaces are not displayed in a Tern *${kind}* block — open an agent block for them ` +
+		"(or set Tern's agent_command to pi-tern). Using pi's own interface here.";
 	try {
-		sink.fallback(reason);
+		sink.fallback?.(reason);
 	} catch {
 		return undefined;
 	}
