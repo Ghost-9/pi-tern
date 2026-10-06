@@ -26,7 +26,6 @@
  *   PI_TERN_FORCE=1        try Tern features outside a Tern pane
  *   PI_TERN_AGENT=pi       agent binary used by tern_fleet
  *   PI_TERN_INLINE_IMAGES=1  native mode: append figures into the transcript
- *   PI_TERN_BLOB_OP        native mode: blob wire shape (id-mime-data|mime-data|inline)
  */
 import { createHash } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";

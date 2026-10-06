@@ -1,10 +1,12 @@
 /**
  * pi-bridge: the extension writes a Markdown dashboard; the Tern plugin renders it in a canvas.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { BRIDGE_PLUGIN_TOML, BRIDGE_WINDOW_LUAU } from "./bridge-plugin.ts";
 import { runTern, scratchDir } from "./tern.ts";
+import { PLUGIN_VERSION } from "./version.ts";
 
 export interface DashboardData {
 	version: string;
@@ -130,7 +132,22 @@ export function installBridgeFiles(): string {
 	mkdirSync(dir, { recursive: true });
 	writeFileSync(path.join(dir, "plugin.toml"), BRIDGE_PLUGIN_TOML, "utf8");
 	writeFileSync(path.join(dir, "window.luau"), BRIDGE_WINDOW_LUAU, "utf8");
+	// Record which shipped build produced these files. `bridgeStatus` compares against it, so a
+	// same-version edit to the Luau still propagates instead of being masked by a matching version
+	// number — the deployed copy here was 16 lines behind while `upToDate` reported true.
+	writeFileSync(path.join(dir, "pi-tern-build.json"), `${bridgeBuildId()}\n`, "utf8");
 	return dir;
+}
+
+/**
+ * An identity for the *content* this extension ships: the plugin version plus a hash of the manifest
+ * and the window entry. Version alone is not enough — every fix within one version would otherwise
+ * need a version bump, and until then a stale window entry would keep running with the plugin
+ * reporting itself current, which is the same shape of bug as the v1.1.3 mailbox guard.
+ */
+export function bridgeBuildId(): string {
+	const hash = createHash("sha256").update(BRIDGE_PLUGIN_TOML).update(BRIDGE_WINDOW_LUAU).digest("hex");
+	return `${PLUGIN_VERSION}-${hash.slice(0, 16)}`;
 }
 
 export async function linkBridge(): Promise<{ dir: string; linkCode: number; reloadCode: number }> {
@@ -166,7 +183,18 @@ export async function bridgeStatus(): Promise<{ installed: boolean; version?: st
 		const bridge = plugins.find((plugin) => plugin.id === "pi-bridge");
 		if (!bridge) return { installed: false, upToDate: false };
 		const expected = BRIDGE_PLUGIN_TOML.match(/version = "([^"]+)"/)?.[1];
-		return { installed: true, version: bridge.version, upToDate: bridge.version === expected };
+		if (bridge.version !== expected) return { installed: true, version: bridge.version, upToDate: false };
+		// The version matches, but the deployed files can still be older than what this extension
+		// ships: a window entry is compiled at window start, so a stale copy keeps running old code
+		// while everything reports itself current. Compare the recorded content id.
+		const stamp = path.join(bridgeDir(), "pi-tern-build.json");
+		let recorded: string | null = null;
+		try {
+			recorded = readFileSync(stamp, "utf8").trim();
+		} catch {
+			recorded = null;
+		}
+		return { installed: true, version: bridge.version, upToDate: recorded === bridgeBuildId() };
 	} catch {
 		return { installed: false, upToDate: false };
 	}

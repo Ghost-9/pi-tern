@@ -632,10 +632,26 @@ local function mailbox_tick(cx)
 	tern.timer(interval, mailbox_tick)
 end
 
-register()
-register_canvas_actions()
-register_links()
-arm()
-register_export()
-tern.timer(MAILBOX_MS, mailbox_tick)
+-- Tern gives a window entry a 50 ms load budget, and these five registrations are host calls
+-- (a chord bind, two event subscriptions, a timer chain and a Carly export). Run at module scope
+-- they intermittently blew the budget, and the only symptom was a WARN in Tern's log:
+--   plugin window entry failed to load plugin="pi-bridge" error=runtime error: tern: load exceeded 50 ms
+-- which reads as a syntax error to anything grepping for "failed to load" — and cost a whole
+-- gate cycle being mistaken for a Luau escape regression.
+--
+-- Deferring costs nothing observable: a chord bound one tick late is imperceptible, and the
+-- mailbox's own first poll is 250 ms away anyway.
+local function boot()
+	-- Each registration is already individually guarded by its own state flag, so a failure
+	-- in one must not stop the others.
+	pcall(register)
+	pcall(register_canvas_actions)
+	pcall(register_links)
+	pcall(arm)
+	pcall(register_export)
+	pcall(function() tern.timer(MAILBOX_MS, mailbox_tick) end)
+	tern.log.warn("pi-bridge: booted, version " .. PLUGIN_VERSION)
+end
+
+tern.timer(0, boot)
 `;

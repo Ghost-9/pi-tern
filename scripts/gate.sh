@@ -5,15 +5,16 @@
 #   1. types            tsc --noEmit  (strict; pi + typebox resolved from node_modules)
 #   2. lint             oxlint (TS + the native/ launcher, which is plain .mjs)
 #   3. native decls     native/*.d.mts must match what the .mjs modules actually export
-#   4. unit tests       the SAME file list `npm test` runs — one list, defined once below
-#   5. stock fallback   the launcher must be invisible outside Tern (compat matrix)
-#   6. plugin loads     a window start is what compiles the Luau; `plugin reload` cannot
-#   7. live surface     the CLI-backed features must work with no Tern pane
+#   4. luau source      the generated Luau is intact before anything imports the module
+#   5. unit tests       the SAME file list `npm test` runs — one list, defined once below
+#   6. stock fallback   the launcher must be invisible outside Tern (compat matrix)
+#   7. plugin loads     a window start is what compiles the Luau; `plugin reload` cannot
+#   8. live surface     the CLI-backed features must work with no Tern pane
 #
 # Every step reports a count. A skipped step says SKIP and is counted separately, so a green
 # run can never be read as "checked everything": the last line is `GATE PASSED (N run, M skip)`.
 #
-#   PI_TERN_SKIP_LIVE=1   skip the steps that need a running Tern (6, 7); costs ~30 s
+#   PI_TERN_SKIP_LIVE=1   skip the steps that need a running Tern (7, 8); costs ~30 s
 #   PI_TERN_REQUIRE_ALL=1 turn any skip into a failure — use this to gate a release
 #
 # The full compat matrix (7 checks) spends model calls, so it needs credentials and a working
@@ -93,6 +94,10 @@ step "lint" "$LOG/lint.log" ./node_modules/.bin/oxlint index.ts lib test scripts
 # names an export the module does not have type-checks green against an API that is not there,
 # which is how the strict pass in 1.1.8 would have been able to lie.
 step "native declarations" "$LOG/nativetypes.log" node scripts/check-native-types.mjs
+
+# Runs before the unit tests on purpose: a bare backtick in the Luau breaks the TypeScript module
+# itself, so a test inside it could never run to report the problem. This reads the file as text.
+step "generated Luau source" "$LOG/luausource.log" node scripts/check-luau-source.mjs
 
 step "unit tests" "$LOG/unit.log" node --experimental-strip-types --test "${UNIT_TESTS[@]}"
 

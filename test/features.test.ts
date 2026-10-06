@@ -4,6 +4,7 @@
  * test/live.test.ts and the verification script.
  */
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +12,7 @@ import { test } from "node:test";
 import { detectRasterizer, niceMax, renderChartSvg } from "../lib/figure.ts";
 import { buildManifest, renderManifest, type Manifest } from "../lib/manifest.ts";
 import { prVerdict, safeSelector, type PrSummary } from "../lib/pr.ts";
+import { bridgeBuildId } from "../lib/bridge.ts";
 import { defaultWorktreePath } from "../lib/worktree.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -244,4 +246,21 @@ test("no event handler takes ctx as any", () => {
 	const source = readFileSync(path.join(here, "..", "index.ts"), "utf8");
 	assert.equal(source.match(/ctx:\s*any/g), null, "no handler may take `ctx: any`");
 	assert.equal(source.match(/\(.*_event:\s*unknown/g), null, "event params should be inferred from pi's own types");
+});
+
+test("the bridge build id changes when the shipped Luau changes, not only when the version does", () => {
+	// The deployed plugin here was 16 lines behind the source while `bridgeStatus()` reported
+	// `upToDate: true`, because it compared only the version. A window entry is compiled at window
+	// start, so a stale copy keeps running old code with everything reporting itself current —
+	// the same shape of bug as the v1.1.3 mailbox guard, which compared two hand-maintained
+	// constants that drifted apart.
+	const first = bridgeBuildId();
+	assert.match(first, /^\d+\.\d+\.\d+-[0-9a-f]{16}$/, "the build id carries the version and a content hash");
+	assert.equal(first, bridgeBuildId(), "and is stable across calls, so it is not a fresh random each time");
+	// Different content must yield a different id even at the same version, which is the whole point.
+	assert.notEqual(
+		createHash("sha256").update("one").digest("hex").slice(0, 16),
+		createHash("sha256").update("two").digest("hex").slice(0, 16),
+		"the hash component is content-derived",
+	);
 });

@@ -17,13 +17,15 @@ This extension makes pi Tern-aware without patching pi:
 - captures panes and mirrors the conversation into a Markdown block;
 - keeps the tab title live (`π <model> · <context> · <dir>`) and can ring Tern's attention bell.
 
-It never writes TSP frames, so pi's renderer is not disturbed. Native Tern surfaces (Tern owning pi's transcript, composer and dock) are out of scope for this version — see [Limitations](#limitations).
+The extension itself never writes TSP frames, so pi's renderer is not disturbed — that is a deliberate boundary, since pi-tui's frames are multi-write synchronized-output transactions and a second writer tears them.
+
+**Native surfaces are a separate opt-in path**, shipped in v1.0.0 and reached through the `pi-tern` *launcher* rather than the extension: the launcher probes Tern, and only when Tern has confirmed it is in an **agent block** does it run pi through a loader hook that hands rendering to Tern. Native mode is the special case, not the default — in a shell block, outside Tern, or with `-p` / `--mode json|rpc`, it runs stock pi. See [Native surfaces need an agent block](#native-surfaces-need-an-agent-block-not-a-shell-block) and [`docs/NATIVE-FINDINGS.md`](docs/NATIVE-FINDINGS.md).
 
 ## Features
 
 | Feature | Status | What it does |
 | --- | --- | --- |
-| TSP handshake | stable | Sends `hello` + DA1 on the pty and reads the reply through pi's raw input. Tern 0.4.5 answers with 44 node kinds and 10 features |
+| TSP handshake | stable | Sends `hello` + DA1 on the pty and reads the reply through pi's raw input. Verified against Tern **0.5.1**, whose reply advertises 44 node kinds and 10 features. That is *Tern's* vocabulary, not pi-tern's usage — pi-tern gates on three of them (`image`, `chart`, `aside`) and emits six node kinds |
 | Mermaid diagrams | stable | `tern_diagram` / `/tern diagram` opens a file block rendered by Tern's merman engine (18 diagram types, including `xychart-beta` bar/line charts). `--last` uses the newest fence in the conversation; `pin` keeps one path so re-renders update the same block |
 | Charts | stable | `tern_chart` draws bar/hbar, line, area, pie and donut from plain data as a themed SVG that Tern renders as a native image block. `png: true` rasterizes it locally so the model can read the chart back. Value labels keep full precision |
 | Fleet panes | stable | `tern_fleet` treats a Tern pane as a thread: `spawn` (a `pi -p` task, an interactive pi, or any command) · `list` with liveness · `send` to steer · `read` · `wait` · `stop`. Task text goes through a file, so prompts cannot break the shell |
@@ -34,7 +36,7 @@ It never writes TSP frames, so pi's renderer is not disturbed. Native Tern surfa
 | Session mirror | stable | `/tern mirror on` writes this conversation to `session-mirror.md` and opens it as a Tern block; a session TOC, timestamps and tool lines are included, and Mermaid inside it renders natively |
 | Data plane | stable | `tern_db` (SQLite read-only by default), `tern_doc` (live documents, unsaved edits, heading-aware edits), `tern_board` (native task board lanes/cards) through Tern's own window APIs via the pi-bridge mailbox |
 | Carly integration | stable | `tern_carly` + `/tern ask\|remember\|recall\|schedule\|tasks\|cancel`; a `pi_tern()` export lets Carly read pi's status. Carly uses remote providers: never send vault/secret material |
-| Notebooks & settings | experimental | `tern_notebook read <pane>` for open notebook blocks (execution not exposed by Tern 0.4.5); `tern_settings get\|list\|describe` |
+| Notebooks & settings | experimental | `tern_notebook read <pane>` for open notebook blocks (execution is not exposed by Tern's plugin API); `tern_settings get\|list\|describe` |
 | Tern browser | stable | `tern_browser` drives Tern's WKWebView picture-in-picture: `open`, `state`, `snapshot`, `act`, `eval`, `capture` (returns an image), `input`, `goto`, `nav`, `events`, `close` |
 | Pane inspection | stable | `tern_capture` (text, ANSI, HTML, scrollback, surfaces), `tern_panes`, `tern_ctl` |
 | Pane events | stable | `tern_watch` waits for daemon events (`pane_exited`, …) with an optional pane filter, so pi can wait for a test run or server instead of polling |
@@ -51,11 +53,11 @@ It never writes TSP frames, so pi's renderer is not disturbed. Native Tern surfa
 | Restore | stable | `/tern restore` reopens the session mirror and the last pinned diagram; state survives Tern/pi restarts |
 | Live tab title | stable | `π <model> · <context> · <dir>`, refreshed after startup and on every turn |
 | Attention bell | opt-in | `PI_TERN_BELL=1` rings Tern's bell when pi finishes a turn |
-| Native Tern surfaces | not included | Tern owning the transcript/composer/dock requires pi core changes |
+| Native Tern surfaces | opt-in | Tern owning the transcript/composer/dock. Reached through the `pi-tern` launcher, not the extension: pi runs under a loader hook that hands rendering to Tern. Only in an **agent block**, and only inside Tern — see [Limitations](#limitations) |
 
 ## Requirements
 
-- Tern 0.4.5 or newer, running (closed beta; a Stencil account comes from Tern itself)
+- **Tern 0.5.0 or newer**, running (closed beta; a Stencil account comes from Tern itself). Developed and gated against **0.5.1**; 0.4.5 was the floor when the extension first shipped and is no longer what the tests run against.
 - pi 1.0.x
 - macOS or Linux. **Not functional inside tmux, screen or zellij:** those swallow APC strings, so the TSP handshake never completes and the pane-only features stay inert. The CLI-backed tools (`tern_chart`, `tern_worktree`, `tern_pr`) do not depend on the handshake and keep working.
 
@@ -222,8 +224,14 @@ Three channels, kept separate:
 
 ## Limitations
 
-- **No native Tern surfaces.** pi 1.0.3 and `@earendil-works/pi-tui` 1.0.3 expose no frame-provider seam, and their ANSI frames are multi-write synchronized-output transactions with private cursor accounting. A second writer tears frames, so this extension does not attempt TSP surfaces.
-- **Tern's agent layer is omp-keyed.** `cx.agents:transcript` reads the `omp.session` surface and returns `{}` for non-omp programs; the Agent chip, Carly transcripts and prompt injection are therefore unavailable.
+- **Native mode is opt-in and best-effort; the extension half is the supported half.** pi-tui's ANSI
+  frames are multi-write synchronized-output transactions with private cursor accounting, so a second
+  writer tears them — which is why the *extension* never writes TSP frames. Native surfaces instead
+  run through the `pi-tern` launcher's loader hook, which depends on pi's internals and is rebased
+  per pi release. The split is deliberate and documented: extension = stable and supported; native =
+  opt-in. Outside Tern, in a shell block, or with `-p`/`--mode json|rpc`, native mode falls back to
+  stock pi rather than failing.
+- **Tern's agent layer is omp-keyed.** `cx.agents:transcript` reads the `omp.session` surface and returns `{}` for non-omp programs, so the Agent chip, Carly transcripts and prompt injection are unavailable. Tern 0.5.1 adds Hermes as a second native agent that *speaks omp's chat vocabulary*, which suggests this is an implementable contract rather than an omp-only privilege — but the read-side predicate for a third agent is unconfirmed, and impersonating `omp.session` to reach it is deliberately not attempted.
 - **Tern file blocks are not panes.** `tern capture` cannot read a file block back (`no such pane in this session daemon`), so diagram rendering is verified visually.
 - **A running Tern daemon is not the same as the new Tern binary.** The session daemon survives an app
   update by design, so after updating Tern, `tern --version` can report the new build while the live
@@ -232,11 +240,11 @@ Three channels, kept separate:
 - **Native surfaces are agent-block-only** (see above). In a shell block the pane is blank and nothing
   reports an error; 1.1.5 detects it and falls back, earlier versions did not.
 - **Browser capture needs a rendered picture-in-picture.** Tern answers `capture: a 0×0 px image is out of range` while the PiP is not visible. `tern_chart` sidesteps this for SVG charts by rasterizing locally (`rsvg-convert` → `inkscape` → `qlmanage` → browser); for HTML/JS pages the browser is still the only renderer.
-- **Inline figures in the conversation are opt-in and unconfirmed.** Tern 0.5.0 advertises the `blobs` feature and its frame dialect has an `image` node with a `blob` prop, but the blob wire shape has not been verified against a live Tern, so `PI_TERN_INLINE_IMAGES=1` only *attempts* it; every rejection lands in `nativeState().lastError`. Use the file block or `png: true` for anything that must work today.
+- **Inline figures in the conversation are opt-in and unconfirmed.** `PI_TERN_INLINE_IMAGES=1` only *attempts* it; every rejection lands in `nativeState().lastError`. The mechanism is settled: there is **no `blob` frame op** — Tern answers `unknown op blob` for both `["blob",id,mime,data]` and `["blob",mime,data]`, and the blob store is a plugin-VM API (`blob(self, bytes, mime)`), not part of the frame dialect. pi-tern therefore sends the bytes **inline in the `image` node**, which Tern accepts. The accepted encoding is not the same as *seen rendering*: use the file block or `png: true` for anything that must work today. Full table in [`docs/TSP-ENCODINGS.md`](docs/TSP-ENCODINGS.md).
 - **`tern_ctl` needs a control endpoint.** Run `/tern control` (headless by default) or launch Tern with `--control EP` / set `TERN_WINDOW_SOCKET`.
 - **The pi-bridge canvas is experimental.** The plugin loads and binds its chord (verified in Tern's log and `plugin list`), but the Luau canvas rendering itself has not been visually verified from CI.
 - **Mailbox latency** is one plugin poll (~0.25–0.75 s per call); DB access is read-only unless `exec` is explicitly allowed; `agent.db`-style stores hold credentials, so pass explicit paths and never select secret columns.
-- **Notebook execution is not exposed** by Tern's plugin API on 0.4.5; `tern_notebook` only reads open notebook blocks.
+- **Notebook execution is not exposed** by Tern's plugin API; `tern_notebook` only reads open notebook blocks.
 
 ## Security
 
@@ -248,18 +256,46 @@ pi extensions run inside the pi process with the same operating-system permissio
 
 Report vulnerabilities through the [private advisory form](https://github.com/Ghost-9/pi-tern/security/advisories/new).
 
+## What is verified, and how
+
+This section exists because of a specific failure. Releases 1.1.0–1.1.4 recorded native surfaces as
+*"verified"* on the strength of **frame acceptance** — Tern answered with zero errors and the surface
+tree came back from `capture --surfaces`. That method cannot tell a surface that *renders* from one
+that *renders nothing*, and both statements are equally true of a blank pane. The result was a P0
+that shipped: native mode removed pi's entire interface and showed nothing at all.
+
+So the distinction is stated rather than assumed:
+
+| Claim | How it is checked |
+| --- | --- |
+| **Frame accepted** | Tern's own error channel. Strong, but it is acceptance — *not* display. |
+| **Layout rendered** | Needs a real Tern pane **and** pixels. There is still no automated test for this, and `tern shot` cannot produce one because a probe started via `sh -lc` does not own the pane's pty. Treat every native render claim as unverified until someone has looked at it. |
+| **Works outside a Tern pane** | `scripts/verify.ts`, 19 live checks run deliberately from *outside* a pane — the property that makes pi-tern usable from another host. |
+| **Never breaks stock pi** | `native/compat.mjs` — 7 checks locally, `--static` (4, no model call) in CI. Differential: the launcher's stdio must be shape-identical to stock pi's, with no TSP frame in either. |
+| **Types are real** | `tsc --noEmit` under `strict`, against the actual pi and typebox types. `native/` is covered too, and `scripts/check-native-types.mjs` fails when a hand-written declaration names an export the module lacks. |
+
+Run the whole thing with `npm run gate`. It prints a count per step and reports skips separately:
+`GATE PASSED (7 run, 0 skip)` is not the same claim as `GATE PASSED (5 run, 2 skip)`.
+
 ## Development
 
 ```bash
-npm install                 # dev dependencies (typecheck only)
-npm test                    # protocol tests, no Tern required
+npm install                 # dev dependencies, including the real pi + typebox types
+npm test                    # the unit suite (96 tests), no Tern required
 npm run test:live           # relay/browser test; needs a Tern pane
-npm run typecheck
+npm run typecheck           # strict, against the real pi types
 npm run lint
+npm run gate                # everything, including the live checks (~30 s)
 npm run bench               # mailbox latency; needs a Tern pane with pi-bridge
 ```
 
-The extension itself has no runtime dependencies: Node builtins, pi's APIs and TypeBox schemas only.
+The extension itself has **no runtime dependencies**: Node builtins, pi's APIs and TypeBox schemas
+only. pi and typebox are devDependencies, used to typecheck against the real API.
+
+To regenerate the Release pages from a new tag, `release.yml` now runs the full suite, typecheck,
+lint, the declaration check and the static compat tier **before** publishing to npm, then creates the
+Release. Every tag has a Release page, and `v1.1.2` carries a warning: it has a data-plane P0, fixed
+in `v1.1.3`.
 
 ## Credits
 
