@@ -23,10 +23,29 @@ So the tests were looking at a blank pane for a reason unrelated to the protocol
 
 ## Why it is still unproven
 
-A native surface displays only in an agent block. Agent blocks can be created two ways: Tern's UI, or
-a scenario sent to a control endpoint. The harness route does not work on Tern 0.5.1 here.
+> **CORRECTION 2026-10-07 (Tern 0.5.2) — the table below is 0.5.1 behaviour and no longer holds.**
+>
+> On **0.5.2** the harness *can* create an agent block: `new-blocks agent` returned `{"ok":true}` in
+> **8 of 8** attempts, where on 0.5.1 it timed out after 20 s for every command including
+> `/usr/bin/true`. The platform limit this file was written for is gone, and the probe now gets past
+> it to report the honest next step: **the block was created but no surface content appeared.**
+>
+> What has *not* changed: **no native frame has been seen to render**, on 0.5.2 either. One step of
+> the chain is now open; the step that matters is still closed.
+>
+> Because whether Tern can host an agent block is Tern's to change, the probe is **no longer gated** —
+> it is reported on every run, and `PI_TERN_REQUIRE_ALL=1` makes it hard. Gating our build on it
+> would fail for something no commit of ours can fix.
+>
+> Operationally, while measuring this: **the session daemon exhausts macOS's default 256-fd soft
+> limit** under heavy window churn and does not recover — `tern ls` then reports a plainly running app
+> as absent. Restart Tern; do not debug pi-tern. Headless `serve` sessions are far cheaper than
+> windows. See the changelog for 1.1.12.
 
-Measured on this machine, every one of these returns `{"ok":false,"error":"timed out after 20s"}`:
+A native surface displays only in an agent block. Agent blocks can be created two ways: Tern's UI, or
+a scenario sent to a control endpoint. The harness route did not work on Tern 0.5.1 here.
+
+Measured on **0.5.1**, every one of these returned `{"ok":false,"error":"timed out after 20s"}`:
 
 | Command | Result |
 | --- | --- |
