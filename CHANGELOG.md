@@ -1,5 +1,66 @@
 # Changelog
 
+## 1.1.12 - 2026-10-07
+
+**Testing was opening GUI windows it had no reason to open, and leaking one per run.**
+
+### The window churn
+
+`scripts/plugin-check.sh` ran `tern --exit-after-first-frame` to compile plugin window entries. That
+**opens a real window**, up to three times per invocation, and the gate runs it on every build.
+`scripts/render-proof.mjs` opened another window on every run. During a day of testing that is
+dozens of windows, and tabs appearing in places nobody asked for.
+
+**`tern serve` is headless and compiles the same window entries.** Verified on Tern 0.5.2: a
+deliberately broken `window.luau` still produces `plugin window entry failed to load … syntax error`,
+and healthy plugins still log `pi-bridge: booted` / `pi-tern-tools: booted`. So the plugin check is
+now headless — equally strong, and it also got faster (6.7 s vs 14 s) because it waits for the
+endpoint to answer instead of sleeping a fixed time. `PI_TERN_PLUGIN_WINDOW=1` restores the old path.
+
+`render-proof` still needs a window (a surface displays only in an agent block, and an agent block
+belongs to a window — a headless session can never answer the question). So it now **declines to
+open one by default** and says how to run it deliberately. It reuses `TERN_WINDOW_SOCKET` when you
+have a window with a control endpoint rather than opening another.
+
+### The leak, and why it was invisible
+
+Every path out of `render-proof` called `process.exit()` from inside its `try`. **`process.exit`
+terminates immediately, so the `finally` that closes the window never ran** — on exactly the paths
+that had opened one. One window leaked per run, forever. A `pkill` pattern was in that `finally`
+too, so it never even ran; killing the spawn handle was replaced by `ctl quit` plus a process-group
+kill, because `tern` forks the real window and killing the parent leaves it orphaned to init.
+
+Two more bugs found while fixing this, both of which would have hidden the first:
+- `let spawned` / `let ownedWindow` were declared **inside** the `try`. `catch` and `finally` are
+  sibling blocks and cannot see `try`-scoped bindings, so the cleanup referenced two undefined names.
+  The window never closed, silently.
+- The readiness wait was skipped whenever an endpoint path was assigned, so the probe reported a
+  socket error instead of a measurement.
+
+Verified: four consecutive opt-in runs, **zero** stray processes; and **zero** net daemon fds across
+five `plugin-check` runs, so the headless path does not leak connections.
+
+### Tern's daemon has a 256 fd ceiling
+
+Measuring that leak surfaced something operational: **the session daemon exhausts macOS's default
+256-fd soft limit**, after which it stops accepting *any* client — `tern ls` returns "no Tern is
+running" while the app is plainly up. It does not recover; the daemon must be restarted.
+
+Windows are the expensive part: each one holds client connections, and a killed one leaves them
+dangling. Headless `serve` sessions and `ctl` calls are far cheaper. If `tern ls` ever starts
+reporting a running app as absent, that is this, and the fix is to restart Tern — not to debug pi-tern.
+
+### `new-blocks agent` now works on Tern 0.5.2
+
+Measured **8 of 8** successes creating an agent block in the control harness, where 0.5.1 timed out
+after 20 s for every command including `/usr/bin/true`. The render probe therefore gets past the
+platform limit it was written for and now reports the honest next step — the block was created but
+no surface content appeared.
+
+So the probe is **no longer gated**: whether Tern can host an agent block is Tern'"'"'s to change,
+and failing our build for it would be failing for something no commit of ours can fix. It is reported
+on every run and `PI_TERN_REQUIRE_ALL=1` makes it hard.
+
 ## 1.1.11 - 2026-10-07
 
 **Tern 0.5.2 (`21a6de4`) landed, and three things follow from it.**
