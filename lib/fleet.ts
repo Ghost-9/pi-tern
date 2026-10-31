@@ -20,6 +20,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { capturePane } from "./ctl.ts";
+import { resolveAgentCommand } from "./host.ts";
 import { runTern, scratchDir } from "./tern.ts";
 
 export interface FleetMember {
@@ -127,7 +128,7 @@ export async function fleetSpawn(options: FleetSpawnOptions): Promise<FleetSpawn
 	const name = safeName(options.name ?? task);
 	let command: string;
 	let taskFile: string | undefined;
-	const agent = options.agentCommand ?? process.env.PI_TERN_AGENT ?? "pi";
+	const agent = options.agentCommand ?? resolveAgentCommand().command;
 	const extra = (options.agentArgs ?? []).map((arg) => `'${arg.replace(/'/g, `'\\''`)}'`);
 
 	if (mode === "command") {

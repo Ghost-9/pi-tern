@@ -219,6 +219,52 @@ test("manifest gates inline images on the blobs feature", () => {
 	assert.equal(withBlobs.capabilities.find((item) => item.id === "native.inlineImages")?.available, true);
 });
 
+test("manifest gates the 0.9 session verbs on the Tern version and says which one it needs", () => {
+	// Before 1.2 these verbs did not exist in pi-tern; the interesting part is the unavailable case,
+	// because a 0.5.x user must be told the version rather than get a tool that fails like a bug.
+	const old = buildManifest(input, environment({ tern: { version: "0.5.2", sessionVerbs: false } }));
+	const oldById = new Map(old.capabilities.map((item) => [item.id, item]));
+	for (const id of ["pane.process", "session.identity", "session.layout", "plugin.types"]) {
+		assert.equal(oldById.get(id)?.available, false, id);
+		assert.match(String(oldById.get(id)?.reason), /needs Tern 0\.9\.0 or newer/, id);
+		assert.match(String(oldById.get(id)?.reason), /0\.5\.2/, `${id} names the build it found`);
+	}
+
+	const modern = buildManifest(input, environment({ tern: { version: "0.9.8", commit: "f21d9a3", sessionVerbs: true } }));
+	const modernById = new Map(modern.capabilities.map((item) => [item.id, item]));
+	assert.equal(modernById.get("pane.process")?.available, true);
+	assert.equal(modernById.get("session.identity")?.available, true);
+	assert.equal(modernById.get("session.layout")?.available, true, "pip/dock are available…");
+	assert.equal(modernById.get("session.layout")?.maturity, "experimental", "…but never rendered on screen here, so labelled so");
+	assert.equal(modernById.get("pane.capture")?.maturity, "stable");
+	assert.equal(modernById.get("session.identity")?.tool, "tern_session");
+});
+
+test("manifest reports the TSP negotiation, including a build newer than this one", () => {
+	const hello = {
+		v: 1,
+		protocol: 1,
+		term: "tern",
+		ver: "0.9.8",
+		kinds: ["col", "md", "chart", "image", "media", "hourglass"],
+		features: ["aside", "blobs", "teleport"],
+		apc: 65536,
+		credits: 2,
+	};
+	const manifest = buildManifest({ ...input, probe: { status: "confirmed", hello } }, environment());
+	assert.ok(manifest.tsp.negotiation);
+	assert.deepEqual(manifest.tsp.negotiation?.kinds.unknown, ["hourglass"]);
+	assert.deepEqual(manifest.tsp.negotiation?.features.unknown, ["teleport"]);
+	assert.equal(manifest.tsp.negotiation?.supported.image, true);
+
+	// v: 2 is used, flagged, and described as a subset — not refused and not silently identical.
+	const future = { ...hello, v: 2, protocol: 1, future: true };
+	const futureManifest = buildManifest({ ...input, probe: { status: "confirmed", hello: future } }, environment());
+	assert.equal(futureManifest.tsp.negotiation?.future, true);
+	assert.match(renderManifest(futureManifest), /newer than the v1 this build speaks/);
+	assert.match(renderManifest(futureManifest), /\[experimental\]/, "the render marks maturity");
+});
+
 test("renderManifest prints one line per capability", () => {
 	const text = renderManifest(buildManifest(input, environment()));
 	assert.ok(text.includes("pi-tern 1.1.0 · contract 1"));

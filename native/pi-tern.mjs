@@ -36,20 +36,31 @@ function resolveRelease() {
 }
 
 /**
- * Find a stock pi to fall back to. PATH first (a developer's managed install is what this is
+ * Find a stock host to fall back to. PATH first (a developer's managed install is what this is
  * really for), then node_modules/.bin, because `@earendil-works/pi-coding-agent` is a
  * devDependency so the stock binary exists there in CI, where nothing is globally installed.
+ *
+ * `pi-bolt` is the same package under a different executable name, so it is a valid fallback and
+ * must not be treated as "not pi": on a bolt-only machine the launcher used to report no stock
+ * install at all. `pi` still wins when both exist — this stays additive.
  */
+const STOCK_NAMES = ["pi", "pi-bolt"];
+
 function findStockPi() {
 	const explicit = process.env.PI_TERN_STOCK;
 	if (explicit) return explicit;
-	for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
-		if (!dir) continue;
-		const candidate = path.join(dir, "pi");
-		if (existsSync(candidate)) return candidate;
+	for (const name of STOCK_NAMES) {
+		for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+			if (!dir) continue;
+			const candidate = path.join(dir, name);
+			if (existsSync(candidate)) return candidate;
+		}
 	}
-	const local = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "node_modules", ".bin", "pi");
-	return existsSync(local) ? local : null;
+	for (const name of STOCK_NAMES) {
+		const local = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "node_modules", ".bin", name);
+		if (existsSync(local)) return local;
+	}
+	return null;
 }
 
 function runStock(args) {
@@ -68,7 +79,7 @@ function runStock(args) {
 	}
 	const stock = findStockPi();
 	if (!stock) {
-		fail("no stock pi found, on PATH or in node_modules/.bin. Install pi, or set PI_TERN_STOCK to its path.");
+		fail("no stock pi or pi-bolt found, on PATH or in node_modules/.bin. Install pi, or set PI_TERN_STOCK to its path.");
 	}
 	const child = spawn(stock, args, { stdio: "inherit", env: { ...process.env, PI_TERN_LAUNCHED: "1" } });
 	child.on("error", (error) => fail(`could not run stock pi (${stock}): ${error.message}`));
