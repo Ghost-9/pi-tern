@@ -158,10 +158,16 @@ export function buildManifest(input: ManifestInput, environment: Manifest["envir
 
 	// The 0.9 session verbs. Greying them out with the version in the reason is the difference
 	// between "your Tern is too old" and a tool that answers `tern whoami: No such file`.
+	// `reason` means "why it is unavailable", so it is only set when the verb cannot run. It used to be
+	// computed unconditionally, which meant a working 0.9.8 build reported
+	// {available: true, reason: "needs Tern 0.9.0 or newer ... this build is 0.9.8"} on every one of
+	// these four capabilities — the exact shape a consumer reads as "broken" on a healthy install.
 	const sessionVerbs = environment.tern?.sessionVerbs === true;
-	const sessionReason = !environment.ternCli
-		? "Tern CLI unavailable"
-		: `needs Tern ${SESSION_VERBS_SINCE} or newer (\`tern whoami\`, \`tern process\`, \`tern pip\`); this build is ${environment.tern?.version ?? "an unreported version"}`;
+	const sessionReason = sessionVerbs
+		? undefined
+		: !environment.ternCli
+			? "Tern CLI unavailable"
+			: `needs Tern ${SESSION_VERBS_SINCE} or newer (\`tern whoami\`, \`tern process\`, \`tern pip\`); this build is ${environment.tern?.version ?? "an unreported version"}`;
 
 	const capabilities: Capability[] = [
 		capability("diagram.mermaid", hasTern, ["tern-cli"], environment.ternCli ? undefined : "Tern CLI unavailable", "tern_diagram"),

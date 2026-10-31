@@ -238,6 +238,13 @@ test("manifest gates the 0.9 session verbs on the Tern version and says which on
 	assert.equal(modernById.get("session.layout")?.maturity, "experimental", "…but never rendered on screen here, so labelled so");
 	assert.equal(modernById.get("pane.capture")?.maturity, "stable");
 	assert.equal(modernById.get("session.identity")?.tool, "tern_session");
+	// `reason` answers "why it is unavailable", so an available capability must not carry one. It used
+	// to be computed unconditionally, and a healthy 0.9.8 install reported
+	// {available: true, reason: "needs Tern 0.9.0 or newer ... this build is 0.9.8"} — the shape a
+	// consumer reads as "broken" on a working machine.
+	for (const id of ["pane.process", "session.identity", "session.layout", "plugin.types"]) {
+		assert.equal(modernById.get(id)?.reason, undefined, `${id} is available, so it has no reason`);
+	}
 });
 
 test("manifest reports the TSP negotiation, including a build newer than this one", () => {
