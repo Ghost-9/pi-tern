@@ -10,14 +10,20 @@
  *
  * Exit code is non-zero when any check fails.
  */
-import { writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { openFileBlock, renderChartSvg, renderFigure } from "../lib/figure.ts";
 import { fleetRead, fleetSpawn, fleetStatus, fleetStop, fleetWait } from "../lib/fleet.ts";
+import { bridgeTypes } from "../lib/bridge.ts";
 import { buildManifest, gatherEnvironment } from "../lib/manifest.ts";
 import { PLUGIN_VERSION } from "../lib/version.ts";
 import { ghStatus, prSummary, prVerdict } from "../lib/pr.ts";
-import { readTernEnv, requireTernCli, scratchDir } from "../lib/tern.ts";
+import { readTernEnv, requireTernCli, scratchDir, sessionVerbSupport, ternAvailable } from "../lib/tern.ts";
+import { describeIdentity, resolveIdentity } from "../lib/identity.ts";
+import { paneProcess } from "../lib/session.ts";
+import { checkApi } from "../lib/luau-api.ts";
+import { BRIDGE_WINDOW_LUAU } from "../lib/bridge-plugin.ts";
+import { TOOLS_WINDOW_LUAU } from "../lib/tools-plugin.ts";
 import { defaultWorktreePath, repoRoot, worktreeList } from "../lib/worktree.ts";
 
 interface Check {
@@ -142,6 +148,43 @@ try {
 	record("manifest: built", manifest.contract === 1 && manifest.capabilities.length > 10, `${available.length}/${manifest.capabilities.length} available`);
 } catch (error) {
 	record("manifest: built", false, String(error));
+}
+
+// 9 — Tern 0.9: identity, process introspection and the plugin API contract
+try {
+	const availability = await ternAvailable(true);
+	const identity = await resolveIdentity(true);
+	record(
+		"tern 0.9: whoami identity",
+		identity ? Boolean(identity.principal) : true,
+		identity ? describeIdentity(identity) : `unavailable on ${availability.release?.version ?? "this build"} (needs 0.9+)`,
+	);
+	if (sessionVerbSupport(availability, "process").supported) {
+		try {
+			const process = await paneProcess(env.paneId ?? "@focused", undefined, 8000);
+			record("tern 0.9: process", typeof process.pane === "number", `${process.foreground?.name ?? process.child?.name ?? "?"} pid ${process.foreground?.pid ?? "?"}`);
+		} catch (error) {
+			record("tern 0.9: process", false, String(error));
+		}
+	} else {
+		record("tern 0.9: process", true, sessionVerbSupport(availability, "process").reason ?? "not available on this Tern");
+	}
+
+	try {
+		const typesDir = path.join(scratchDir(), "verify-types");
+		mkdirSync(typesDir, { recursive: true });
+		const written = await bridgeTypes(typesDir);
+		if (written.error) {
+			record("tern 0.9: plugin types", true, `unavailable: ${written.error.slice(0, 120)}`);
+		} else {
+			const api = written.api ?? checkApi(readFileSync(written.file, "utf8"), [BRIDGE_WINDOW_LUAU, TOOLS_WINDOW_LUAU]);
+			record("tern 0.9: plugin API", api.missing.length === 0, `${api.used} shipped symbols, ${api.declaredTern} declared paths, missing=${api.missing.join(",") || "none"}`);
+		}
+	} catch (error) {
+		record("tern 0.9: plugin types", false, String(error));
+	}
+} catch (error) {
+	record("tern 0.9 checks", false, String(error));
 }
 
 const failed = results.filter((result) => !result.ok);
