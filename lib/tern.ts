@@ -13,10 +13,22 @@ export interface TernEnv {
 	paneSocket?: string;
 	windowSocket?: string;
 	windowKey?: string;
+	/**
+	 * The rest of what a 0.9.x pane exports, all optional.
+	 *
+	 * Measured in a real 0.9.8 pane: `TERN_IDENTITY` (the whoami chain as JSON), `TERN_CONFIG_DIR`,
+	 * `TERN_EXE`, `TERN_BLOB_DIR`, `TERN_COMPLETE`. Older builds export none of these, so nothing
+	 * may require them — each one is a cheaper source for something pi-tern otherwise has to ask
+	 * Tern for, or has to guess.
+	 */
+	configDir?: string;
+	daemonSocket?: string;
+	identity?: string;
+	exe?: string;
 }
 
-export function readTernEnv(): TernEnv {
-	const e = process.env;
+export function readTernEnv(env: NodeJS.ProcessEnv = process.env): TernEnv {
+	const e = env;
 	return {
 		inTern: (e.TERM_PROGRAM ?? "").toLowerCase() === "tern",
 		version: e.TERM_PROGRAM_VERSION,
@@ -24,7 +36,115 @@ export function readTernEnv(): TernEnv {
 		paneSocket: e.TERN_PANE_SOCKET,
 		windowSocket: e.TERN_WINDOW_SOCKET || undefined,
 		windowKey: e.TERN_WINDOW_KEY || undefined,
+		configDir: e.TERN_CONFIG_DIR || undefined,
+		daemonSocket: e.TERN_DAEMON_SOCKET || undefined,
+		identity: e.TERN_IDENTITY || undefined,
+		exe: e.TERN_EXE || undefined,
 	};
+}
+
+/**
+ * A Tern CLI version, as `tern --version` prints it.
+ *
+ * The CLI answers `0.9.8 (f21d9a3)`: a semver triple and the build's commit. Newer builds have
+ * added verbs (0.9.x brought `whoami`, `process`, `pip`, `dock`, `serve` and `plugin types`), so
+ * the number is the only thing that can tell a capability probe what it may call. Before 1.2
+ * there was no version parsing at all — pi-tern assumed every Tern had every verb it used, which
+ * is why a 0.5.x user got `unknown command` instead of an explanation.
+ */
+export interface TernVersion {
+	/** The first line exactly as printed. */
+	raw: string;
+	/** The dotted triple, without a leading `v` or a trailing `-beta`. */
+	version: string;
+	major: number;
+	minor: number;
+	patch: number;
+	/** The build commit Tern prints in parentheses, when it does. */
+	commit?: string;
+}
+
+export function parseTernVersion(raw: string | undefined | null): TernVersion | null {
+	if (typeof raw !== "string") return null;
+	const first = raw.split("\n")[0].trim();
+	if (first.length === 0) return null;
+	// `tern 0.9.8`, `0.9.8 (f21d9a3)` and `v0.9.8` all name the same build.
+	const match = first.match(/(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?/);
+	if (!match) return null;
+	const major = Number(match[1]);
+	const minor = Number(match[2]);
+	const patch = Number(match[3]);
+	if (![major, minor, patch].every((part) => Number.isFinite(part))) return null;
+	const version: TernVersion = { raw: first, version: `${major}.${minor}.${patch}`, major, minor, patch };
+	const commit = first.match(/\(([0-9a-f]{4,40})\)/i)?.[1];
+	if (commit) version.commit = commit;
+	return version;
+}
+
+/** Compare against a dotted minimum, e.g. `versionAtLeast(v, "0.9.0")`. Unparseable → false. */
+export function versionAtLeast(version: TernVersion | null | undefined, minimum: string): boolean {
+	if (!version) return false;
+	const floor = parseTernVersion(minimum);
+	if (!floor) return false;
+	if (version.major !== floor.major) return version.major > floor.major;
+	if (version.minor !== floor.minor) return version.minor > floor.minor;
+	return version.patch >= floor.patch;
+}
+
+/**
+ * The Tern release that introduced the session verbs pi-tern 1.2 drives.
+ *
+ * 0.9.8 was measured directly (`tern whoami --json`, `tern process --json`); 0.5.2 was not
+ * available to measure against, so this is the boundary pi-tern will *state*, and `PI_TERN_FORCE=1`
+ * is the escape hatch if a fork backports a verb.
+ */
+export const SESSION_VERBS_SINCE = "0.9.0";
+
+export type SessionVerb =
+	| "whoami"
+	| "process"
+	| "rename"
+	| "move"
+	| "pip"
+	| "dock"
+	| "keep-open"
+	| "split"
+	| "focus";
+
+export interface VerbSupport {
+	supported: boolean;
+	version?: string;
+	reason?: string;
+}
+
+/**
+ * Whether this Tern build can be asked `verb` (a CLI verb introduced with the 0.9 session set).
+ *
+ * A missing verb is not a crash — `tern whoami` on a build without it opens a directory called
+ * `whoami` — so the check is made before the call, not after it fails.
+ */
+export function cliVerbSupport(
+	availability: Pick<TernAvailability, "cli" | "release"> | null | undefined,
+	verb: string,
+): VerbSupport {
+	if (process.env.PI_TERN_FORCE === "1") return { supported: true, reason: undefined };
+	if (!availability?.cli) return { supported: false, reason: "the `tern` command did not answer on PATH" };
+	const release = availability.release ?? null;
+	if (release && versionAtLeast(release, SESSION_VERBS_SINCE)) return { supported: true, version: release.version };
+	return {
+		supported: false,
+		reason: release
+			? `\`tern ${verb}\` needs Tern ${SESSION_VERBS_SINCE} or newer; this is ${release.version}. Everything else still works.`
+			: `\`tern ${verb}\` needs Tern ${SESSION_VERBS_SINCE} or newer and this CLI did not report a version`,
+	};
+}
+
+/** `sessionVerbSupport` is `cliVerbSupport` for the verb union, so the two cannot drift apart. */
+export function sessionVerbSupport(
+	availability: Pick<TernAvailability, "cli" | "release"> | null | undefined,
+	verb: SessionVerb,
+): VerbSupport {
+	return cliVerbSupport(availability, verb);
 }
 
 export interface RunResult {
@@ -76,8 +196,22 @@ export function scratchDir(): string {
  * Set both and every new tab is an *agent* block running pi-tern — the only kind of block in which
  * Tern draws a TSP surface.
  */
-export function ternSettingsPath(): string {
-	return path.join(os.homedir(), "Library", "Application Support", "Tern", "settings.json");
+export function ternSettingsPath(env: NodeJS.ProcessEnv = process.env): string {
+	return path.join(ternConfigDir(env), "settings.json");
+}
+
+/**
+ * Tern's state directory: settings.json, the plugins directory, session state.
+ *
+ * `TERN_CONFIG_DIR` overrides it, and a 0.9.8 pane exports it — so `/tern agent-setup` editing a
+ * hard-coded `~/Library/Application Support/Tern/settings.json` would silently write to a file the
+ * running Tern is not reading, report success, and change nothing. That is the same class of bug as
+ * a stale plugin version, so the override is honoured here rather than assumed away.
+ */
+export function ternConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+	const override = env.TERN_CONFIG_DIR?.trim();
+	if (override) return override;
+	return path.join(os.homedir(), "Library", "Application Support", "Tern");
 }
 
 /**
@@ -200,6 +334,8 @@ export interface TernAvailability {
 	inPane: boolean;
 	cli: boolean;
 	version?: string;
+	/** The same answer, parsed: what the capability gates compare against. */
+	release?: TernVersion | null;
 	reason?: string;
 }
 
@@ -217,6 +353,7 @@ export async function ternAvailable(refresh = false): Promise<TernAvailability> 
 		inPane,
 		cli,
 		version: version || undefined,
+		release: parseTernVersion(version),
 		reason: cli
 			? undefined
 			: insideMultiplexer()
