@@ -53,7 +53,7 @@
 		"test:live": "node --experimental-strip-types --test test/live.test.ts",
 		"typecheck": "tsc --noEmit",
 		"lint": "oxlint index.ts lib test",
-		"coverage": "node --experimental-strip-types --test --experimental-test-coverage test/protocol.test.ts",
+		"coverage": "node --experimental-strip-types --test --experimental-test-coverage test/protocol.test.ts test/native.test.ts test/features.test.ts test/refs.test.ts test/bridge-luau.test.ts test/native-sink.test.ts test/agent-setup.test.ts test/version.test.ts test/handshake.test.ts test/fleet-prune.test.ts test/package.test.ts test/tsp-hello.test.ts test/version-gate.test.ts test/session.test.ts test/host.test.ts test/plugin-api.test.ts test/host-load.test.ts test/tern-live.test.ts",
 		"bench": "node --experimental-strip-types scripts/bench.ts",
 		"gate": "bash scripts/gate.sh",
 		"verify": "node --experimental-strip-types scripts/verify.ts"

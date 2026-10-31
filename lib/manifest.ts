@@ -169,16 +169,38 @@ export function buildManifest(input: ManifestInput, environment: Manifest["envir
 			? "Tern CLI unavailable"
 			: `needs Tern ${SESSION_VERBS_SINCE} or newer (\`tern whoami\`, \`tern process\`, \`tern pip\`); this build is ${environment.tern?.version ?? "an unreported version"}`;
 
+	// `whoami` is the one 0.9 verb that requires a pane rather than a daemon. Measured on 0.9.8:
+	// outside a pane it refuses with "not inside a Tern pane (TERN_PANE_SOCKET and TERN_PANE are
+	// unset)", before it even looks for a daemon, while `process`, `pip`, `dock`, `move` and
+	// `rename` all answer "no Tern is running" instead — they work from anywhere a daemon serves.
+	// So only identity needs `tern-pane`, and only identity is unavailable outside one.
+	const identityAvailable = sessionVerbs && hasPane;
+	const identityReason = sessionVerbs
+		? hasPane
+			? undefined
+			: "not inside a Tern pane: `tern whoami` reports the identity of the pane it runs in"
+		: sessionReason;
+
 	const capabilities: Capability[] = [
 		capability("diagram.mermaid", hasTern, ["tern-cli"], environment.ternCli ? undefined : "Tern CLI unavailable", "tern_diagram"),
 		capability("figure.chart", hasTern, ["tern-cli"], environment.ternCli ? undefined : "Tern CLI unavailable", "tern_chart"),
-		capability("figure.png", hasTern || Boolean(environment.rasterizer), ["tern-cli"], environment.ternCli ? undefined : "Tern CLI unavailable", "tern_chart"),
+		// PNG figures do not need Tern: a local rasterizer is enough. So the reason follows the same
+		// rule as every other capability here - it describes why it is *unavailable*, which means it
+		// is absent when a rasterizer makes the capability work without the CLI. Found by the
+		// manifest-wide invariant test, not by reading this line.
+		capability(
+			"figure.png",
+			hasTern || Boolean(environment.rasterizer),
+			["tern-cli"],
+			hasTern || environment.rasterizer ? undefined : "no Tern CLI and no local rasterizer (rsvg-convert or resvg)",
+			"tern_chart",
+		),
 		capability("browser.pip", hasTern, ["tern-cli"], environment.ternCli ? undefined : "Tern CLI unavailable", "tern_browser"),
 		capability("pane.run", hasTern, ["tern-cli"], environment.ternCli ? undefined : "Tern CLI unavailable", "tern_run"),
 		capability("pane.capture", hasTern, ["tern-cli"], environment.ternCli ? undefined : "Tern CLI unavailable", "tern_capture"),
 		capability("pane.events", hasTern, ["tern-cli"], environment.ternCli ? undefined : "Tern CLI unavailable", "tern_watch"),
 		capability("pane.process", sessionVerbs, ["tern-cli"], sessionReason, "tern_session"),
-		capability("session.identity", sessionVerbs, ["tern-cli"], sessionReason, "tern_session"),
+		capability("session.identity", identityAvailable, ["tern-cli", "tern-pane"], identityReason, "tern_session"),
 		// Measured on 0.9.8 headlessly only as far as Tern's own refusals (`powers a second block`,
 		// `not a picture in picture`): the arrangement itself was never seen on screen.
 		capability("session.layout", sessionVerbs, ["tern-cli"], sessionReason, "tern_session", "experimental"),
@@ -201,9 +223,9 @@ export function buildManifest(input: ManifestInput, environment: Manifest["envir
 		capability("data.sqlite", bridgeReady, ["tern-plugin"], bridgeReady ? undefined : bridgeReason, "tern_db"),
 		capability("carly.ask", bridgeReady, ["tern-plugin"], bridgeReady ? undefined : bridgeReason, "tern_carly"),
 		capability("ui.test", hasTern, ["tern-cli"], environment.ternCli ? undefined : "Tern CLI unavailable", "tern_ui_test"),
-		capability("shot.golden", hasTern, ["tern-cli"], undefined, "tern_shot"),
+		capability("shot.golden", hasTern, ["tern-cli"], hasTern ? undefined : "Tern CLI unavailable", "tern_shot"),
 		capability("plugin.types", sessionVerbs, ["tern-cli"], sessionReason, "tern_bridge", "experimental"),
-		capability("remote.hosts", hasTern, ["tern-cli"], undefined, "tern_remote"),
+		capability("remote.hosts", hasTern, ["tern-cli"], hasTern ? undefined : "Tern CLI unavailable", "tern_remote"),
 		capability("status.title", hasPane, ["tern-pane"], hasPane ? undefined : "not running in a Tern pane"),
 		capability("tsp.probe", hasPane, ["tern-pane"], hasPane ? undefined : "not running in a Tern pane"),
 		capability(
@@ -223,7 +245,7 @@ export function buildManifest(input: ManifestInput, environment: Manifest["envir
 				: "native mode is not active",
 		),
 		capability("mirror.session", true, ["pi"], undefined),
-		capability("bell", Boolean(process.env.PI_TERN_BELL), ["pi"], "opt-in: PI_TERN_BELL=1"),
+		capability("bell", Boolean(process.env.PI_TERN_BELL), ["pi"], process.env.PI_TERN_BELL ? undefined : "opt-in: PI_TERN_BELL=1"),
 	];
 
 	const hello = input.probe.hello as TspHello | null;

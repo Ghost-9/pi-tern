@@ -230,7 +230,7 @@ test("manifest gates the 0.9 session verbs on the Tern version and says which on
 		assert.match(String(oldById.get(id)?.reason), /0\.5\.2/, `${id} names the build it found`);
 	}
 
-	const modern = buildManifest(input, environment({ tern: { version: "0.9.8", commit: "f21d9a3", sessionVerbs: true } }));
+	const modern = buildManifest(input, environment({ inPane: true, tern: { version: "0.9.8", commit: "f21d9a3", sessionVerbs: true } }));
 	const modernById = new Map(modern.capabilities.map((item) => [item.id, item]));
 	assert.equal(modernById.get("pane.process")?.available, true);
 	assert.equal(modernById.get("session.identity")?.available, true);
@@ -517,4 +517,65 @@ test("a stale hello is marked, so 'confirmed' cannot quietly mean 'old'", () => 
 		/probe\.status = probe\.hello \? "confirmed" : "timeout"/,
 		"a failed re-probe falls back to the hello we already had",
 	);
+});
+
+/**
+ * The two halves of `reason`, checked across the whole manifest rather than capability by
+ * capability.
+ *
+ * The 1.2.0 review found `session.identity` and friends reporting
+ * `{available: true, reason: "needs Tern 0.9.0 or newer ..."}` on a healthy 0.9.8 install, which is
+ * the shape a consumer reads as "broken" on a working machine. Asserting the property over every
+ * capability means the next capability added with a conditional reason cannot reintroduce it, in
+ * either direction: an unavailable capability that stays silent is just as unhelpful as an
+ * available one that complains.
+ */
+test("every capability reports a reason iff it is unavailable", () => {
+	const environments = [
+		environment(),
+		environment({ inPane: true }),
+		environment({ ternCli: false }),
+		environment({ bridge: { installed: false, upToDate: false } }),
+		environment({ inPane: true, tern: { version: "0.9.8", commit: "f21d9a3", sessionVerbs: true } }),
+		environment({ tern: { version: "0.5.2", sessionVerbs: false } }),
+	];
+	for (const env of environments) {
+		for (const capability of buildManifest(input, env).capabilities) {
+			if (capability.available) {
+				assert.equal(
+					capability.reason,
+					undefined,
+					`${capability.id} is available, so it must not carry a reason (${JSON.stringify(env.inPane)}/${env.ternVersion})`,
+				);
+			} else {
+				assert.ok(
+					capability.reason && capability.reason.length > 0,
+					`${capability.id} is unavailable, so it must say why`,
+				);
+			}
+		}
+	}
+});
+
+test("identity needs a pane, because `tern whoami` reports the pane it runs in", () => {
+	// Measured on 0.9.8: outside a pane `tern whoami` refuses with "not inside a Tern pane", before
+	// it looks for a daemon — unlike `process`/`pip`/`dock`/`move`/`rename`, which answer "no Tern is
+	// running" and therefore only need the CLI plus a daemon.
+	const outside = buildManifest(input, environment({ inPane: false, tern: { version: "0.9.8", sessionVerbs: true } }));
+	const outsideIdentity = outside.capabilities.find((item) => item.id === "session.identity");
+	assert.equal(outsideIdentity?.available, false);
+	assert.match(String(outsideIdentity?.reason), /not inside a Tern pane/);
+	assert.deepEqual(outsideIdentity?.requires, ["tern-cli", "tern-pane"]);
+
+	const inside = buildManifest(input, environment({ inPane: true, tern: { version: "0.9.8", sessionVerbs: true } }));
+	assert.equal(inside.capabilities.find((item) => item.id === "session.identity")?.available, true);
+
+	// The daemon-addressed verbs still work from outside a pane, so they must not inherit that gate.
+	for (const id of ["pane.process", "session.layout"]) {
+		assert.equal(
+			outside.capabilities.find((item) => item.id === id)?.available,
+			true,
+			`${id} is addressed through the daemon and does not need a pane`,
+		);
+	}
 });
