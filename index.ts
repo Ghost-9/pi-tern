@@ -41,7 +41,7 @@ import { fleetPrune, fleetRead, fleetSend, fleetSpawn, fleetStatus, fleetStop, f
 import { buildManifest, gatherEnvironment, renderManifest } from "./lib/manifest.ts";
 import { ghStatus, openPrInBrowser, prComments, prList, prSummary, prVerdict, prWatch } from "./lib/pr.ts";
 import { defaultWorktreePath, openWorktreePane, repoRoot, worktreeAdd, worktreeList, worktreePrune, worktreeRemove, worktreeStatus } from "./lib/worktree.ts";
-import { bridgeDir, buildDashboard, ensureBridge, linkBridge, writeDashboard, writeDashboardJson } from "./lib/bridge.ts";
+import { bridgeDir, bridgeStatus, bridgeTypes, buildDashboard, ensureBridge, linkBridge, writeDashboard, writeDashboardJson } from "./lib/bridge.ts";
 import { classifyToolResult, mergeToolResults, type ToolResult } from "./lib/toolresults.ts";
 import { gitGraphFromLog, mermaidFromOutput, runCommand } from "./lib/diagrams.ts";
 import { dbQueryGuard } from "./lib/guard.ts";
@@ -50,9 +50,11 @@ import { mailbox, paneKind } from "./lib/mailbox.ts";
 import { relayPing } from "./lib/relay.ts";
 import { runShellInTern } from "./lib/run.ts";
 import { loadState, saveState } from "./lib/state.ts";
-import { insideMultiplexer, readTernEnv, requireTernCli, runTern, scratchDir, setTernAgentDefaults, ternSettingsPath, type TernEnv } from "./lib/tern.ts";
+import { cliVerbSupport, insideMultiplexer, readTernEnv, requireTernCli, runTern, scratchDir, sessionVerbSupport, setTernAgentDefaults, ternAvailable, ternSettingsPath, versionAtLeast, SESSION_VERBS_SINCE, type TernEnv, type SessionVerb } from "./lib/tern.ts";
 import { describeRefs, linkifyFileRefs, parseFileRefs, type FileRef } from "./lib/refs.ts";import { cleanShellBlock, extractMermaids, extractShellBlocks, messageText, renderMessageMarkdown, renderToolMarkdown } from "./lib/text.ts";
-import { asHello, encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, normalizeOsc877, type TspHello } from "./lib/tsp.ts";
+import { encodeHello, extractTspMessages, isDa1Reply, looksLikeTsp, normalizeOsc877, parseHelloMessage, describeHello, negotiateHello, type TspHello } from "./lib/tsp.ts";
+import { describeIdentity, readIdentityEnv, resolveIdentity, type TernIdentity } from "./lib/identity.ts";
+import { dockBlock, keepPaneOpen, moveBlock, paneProcess, pipBlock, renameTarget, type PaneProcess } from "./lib/session.ts";
 import { PLUGIN_VERSION } from "./lib/version.ts";
 
 // Derived from package.json. A hand-maintained copy of this number is what caused the 1.1.3 P0,
@@ -70,6 +72,7 @@ const DEFERRED_TOOL_NAMES = [
 	"tern_files",
 	"tern_capture",
 	"tern_panes",
+	"tern_session",
 	"tern_ctl",
 	"tern_mirror",
 	"tern_watch",
@@ -93,6 +96,15 @@ interface ProbeState {
 	status: "idle" | "pending" | "confirmed" | "absent" | "timeout" | "skipped";
 	hello: TspHello | null;
 	probedAt?: number;
+	/**
+	 * Why a TSP reply that did arrive was not accepted.
+	 *
+	 * Before 1.2 a hello this build did not recognise was discarded without a word: the session
+	 * reported `absent`, which is also what "this terminal does not speak TSP" reports, and the two
+	 * need completely different fixes. Recording the parse problem is what makes a newer Tern
+	 * visible instead of looking like an older terminal.
+	 */
+	rejected?: string;
 }
 
 const probe: ProbeState = { status: "idle", hello: null };
@@ -127,7 +139,10 @@ function describeProbe(): string {
 		`Tern: ${env.inTern ? "yes" : "no"}${env.version ? ` (TERM_PROGRAM_VERSION=${env.version})` : ""}`,
 		`pane: ${env.paneId ?? "-"}  socket: ${env.paneSocket ?? "-"}`,
 		`window control: ${env.windowSocket ?? "(none — launch Tern with --control for tern_ctl)"}`,
-		`TSP probe: ${probe.status}`,
+		// TERN_IDENTITY is free inside a 0.9 pane and is the only honest answer to "who is this":
+		// the 0.5-era alternative was to infer it from TERM_PROGRAM and a socket path.
+		`identity: ${describeIdentity(readIdentityEnv())}`,
+		`TSP probe: ${probe.status}${probe.rejected ? ` (reply rejected: ${probe.rejected})` : ""}`,
 		`title updates: ${process.env.PI_TERN_TITLE === "0" ? "off" : "on"}  bell: ${process.env.PI_TERN_BELL === "1" ? "on" : "off"}  mirror: ${mirrorEnabled ? "on" : "off"}`,
 		`control endpoint: ${loadState().control ?? env.windowSocket ?? "(none — /tern control starts one)"}`,
 		`last mermaid: ${lastMermaid ? `${lastMermaid.source.length} chars, ${Math.round((Date.now() - lastMermaid.at) / 1000)}s ago` : "none"}`,
@@ -136,6 +151,7 @@ function describeProbe(): string {
 		const h = probe.hello;
 		lines.push(
 			`hello: v=${h.v} term=${h.term} ver=${h.ver ?? "?"} apc=${h.apc} credits=${h.credits} cols=${h.cols ?? "?"} dark=${h.dark} reduce-motion=${h.reduceMotion === true ? "on" : "off"}`,
+			`${describeHello(h)}`,
 			`kinds (${h.kinds.length}): ${h.kinds.join(", ")}`,
 			`features: ${h.features.join(", ")}`,
 			// Stated plainly, because "confirmed" reads equally true of a fresh and a stale
@@ -144,10 +160,44 @@ function describeProbe(): string {
 				? ["note: this hello is STALE — it predates the running daemon. A session resume re-probes; if you see this, the re-probe did not answer."]
 				: []),
 		);
+		if (h.extra) lines.push(`hello fields this build does not model: ${Object.keys(h.extra).join(", ")}`);
 	}
+	if (probe.rejected) lines.push(`hello rejected: ${probe.rejected} — a Tern reply arrived but this build could not use it`);
 	if (probe.status === "absent") lines.push("note: DA1 answered before any tsp;r — this terminal does not speak TSP.");
 	if (probe.status === "timeout") lines.push("note: no reply before the deadline (multiplexer, or Native program surfaces off).");
 	return lines.join("\n");
+}
+
+/**
+ * What the Tern CLI says about itself, plus who this pane is.
+ *
+ * Shared by `tern_status`, `tern_diagnose` and `/tern doctor` so the three can never disagree
+ * about the version that decides whether the 0.9 verbs are gated on — which is exactly the drift
+ * that made the plugin version a P0 once already.
+ */
+async function describeTern(): Promise<{
+	version?: string;
+	commit?: string;
+	sessionVerbs: boolean;
+	sessionVerbsSince: string;
+	configDir?: string;
+	daemonSocket: boolean;
+	identity: TernIdentity | null;
+	identityLine: string;
+}> {
+	const availability = await ternAvailable();
+	const env = readTernEnv();
+	const identity = await resolveIdentity().catch(() => null);
+	return {
+		...(availability.release ? { version: availability.release.version } : {}),
+		...(availability.release?.commit ? { commit: availability.release.commit } : {}),
+		sessionVerbs: availability.cli && versionAtLeast(availability.release, SESSION_VERBS_SINCE),
+		sessionVerbsSince: SESSION_VERBS_SINCE,
+		...(env.configDir ? { configDir: env.configDir } : {}),
+		daemonSocket: Boolean(env.daemonSocket),
+		identity,
+		identityLine: describeIdentity(identity),
+	};
 }
 
 /**
@@ -180,12 +230,16 @@ function registerProbe(ctx: { mode?: string; ui?: Pick<ExtensionUIContext, "onTe
 			const { messages, rest } = extractTspMessages(normalized);
 			pendingInput = "";
 			for (const message of messages) {
-				const hello = asHello(message);
-				if (hello) {
-					probe.hello = hello;
+				const parsed = parseHelloMessage(message);
+				if (parsed.hello) {
+					probe.hello = parsed.hello;
 					probe.status = "confirmed";
+					probe.rejected = undefined;
 					if (probeDeadline) clearTimeout(probeDeadline);
 					probeDeadline = undefined;
+				} else if (message.verb === "r") {
+					// A reply-shaped message that is not a usable hello: keep the reason for /tern doctor.
+					probe.rejected = parsed.problem;
 				}
 			}
 			if (messages.length > 0) {
@@ -947,7 +1001,7 @@ export default function piTern(pi: ExtensionAPI) {
 		name: "tern_status",
 		label: "Tern status",
 		description:
-			"Report whether pi runs inside Tern, the pane ids, the TSP hello reply (kinds, features, credits), the last mermaid seen, and the mirror state. Set manifest to include the machine-readable capability contract (what is available right now and why not). More Tern tools are callable from codemode scripts by name (ctx.tools): tern_capture, tern_panes, tern_ctl, tern_mirror, tern_watch, tern_diagnose, tern_shot, tern_remote, tern_bridge, tern_doc, tern_board, tern_carly, tern_notebook, tern_settings, tern_chart, tern_worktree, tern_pr, tern_fleet.",
+			"Report whether pi runs inside Tern, the pane ids, the Tern release, the whoami identity chain, the TSP hello reply (protocol version, kinds, features, credits), the last mermaid seen, and the mirror state. Set manifest to include the machine-readable capability contract (what is available right now and why not). More Tern tools are callable from codemode scripts by name (ctx.tools): tern_capture, tern_panes, tern_ctl, tern_mirror, tern_watch, tern_diagnose, tern_shot, tern_remote, tern_bridge, tern_session, tern_doc, tern_board, tern_carly, tern_notebook, tern_settings, tern_chart, tern_worktree, tern_pr, tern_fleet.",
 		parameters: Type.Object({
 			manifest: Type.Optional(Type.Boolean({ description: "Include the capability manifest" })),
 		}),
@@ -955,7 +1009,8 @@ export default function piTern(pi: ExtensionAPI) {
 			const env = readTernEnv();
 			const base = {
 				env,
-				probe: { status: probe.status, hello: probe.hello },
+				probe: { status: probe.status, hello: probe.hello, rejected: probe.rejected ?? null },
+				tern: await describeTern(),
 				lastMermaid: lastMermaid ? { chars: lastMermaid.source.length, at: lastMermaid.at } : null,
 				mirror: { enabled: mirrorEnabled, path: mirrorFile() },
 				native: (globalThis as any).__piTernNative?.state?.() ?? null,
@@ -1249,6 +1304,101 @@ export default function piTern(pi: ExtensionAPI) {
 		},
 	});
 
+	const sessionTool = defineTool({
+		name: "tern_session",
+		label: "Tern session",
+		description:
+			"Who and what this Tern pane is, and the 0.9 session verbs. Actions: whoami (the identity chain: principal, host, how the pane was reached), process (the pid, argv and cwd of what a block is running), rename (a session or a block's tab), move (a block beside/above/left-of/right-of another, or into a tab), pip (float a block as a picture in picture, optionally over another), dock (put it back), keep-open (keep a block after its program exits). The verbs need Tern 0.9 or newer; on an older build the error names the version it needs and nothing else changes.",
+		parameters: Type.Object({
+			action: Type.Union([
+				Type.Literal("whoami"),
+				Type.Literal("process"),
+				Type.Literal("rename"),
+				Type.Literal("move"),
+				Type.Literal("pip"),
+				Type.Literal("dock"),
+				Type.Literal("keep-open"),
+			]),
+			block: Type.Optional(Type.String({ description: "Block id; default @focused. rename also takes a session name" })),
+			name: Type.Optional(Type.String({ description: "rename: the new session or tab name" })),
+			how: Type.Optional(
+				Type.Union(
+					[
+						Type.Literal("below"),
+						Type.Literal("above"),
+						Type.Literal("left-of"),
+						Type.Literal("right-of"),
+						Type.Literal("tab"),
+					],
+					{ description: "move: where, relative to `target` (tab N|new-tab)" },
+				),
+			),
+			target: Type.Optional(Type.String({ description: "move: the other block, or the tab number" })),
+			over: Type.Optional(Type.String({ description: "pip: the block to float over (default: the one taking its place)" })),
+			corner: Type.Optional(
+				Type.Union([Type.Literal("tl"), Type.Literal("tr"), Type.Literal("bl"), Type.Literal("br")], {
+					description: "pip: which corner",
+				}),
+			),
+			side: Type.Optional(
+				Type.Union([Type.Literal("left"), Type.Literal("right"), Type.Literal("up"), Type.Literal("down")], {
+					description: "dock: which side of the split to return to",
+				}),
+			),
+			open: Type.Optional(Type.Boolean({ description: "keep-open: true to keep the block (default true)" })),
+		}),
+		async execute(_id, params) {
+			const availability = await ternAvailable();
+			// Gate before calling: `tern whoami` on a build without it opens a directory called
+			// `whoami`, so a missing verb would read as a filesystem error rather than a version.
+			const require = (verb: SessionVerb): void => {
+				const support = sessionVerbSupport(availability, verb);
+				if (!support.supported) throw new Error(support.reason ?? `tern ${verb} is unavailable on this Tern build`);
+			};
+			const block = params.block?.trim() || "@focused";
+			switch (params.action) {
+				case "whoami": {
+					const identity = await resolveIdentity(true);
+					if (!identity) {
+						require("whoami");
+						throw new Error("tern whoami answered with no identity chain");
+					}
+					return asText(JSON.stringify({ identity, line: describeIdentity(identity) }, null, 2));
+				}
+				case "process": {
+					require("process");
+					return asText(JSON.stringify(await paneProcess(block), null, 2));
+				}
+				case "rename": {
+					require("rename");
+					if (!params.name?.trim()) throw new Error("rename needs a name");
+					return asText(JSON.stringify(await renameTarget(block, params.name.trim()), null, 2));
+				}
+				case "move": {
+					require("move");
+					if (!params.how || params.target === undefined) throw new Error("move needs how and target");
+					return asText(JSON.stringify(await moveBlock(block, params.how, params.target), null, 2));
+				}
+				case "pip": {
+					require("pip");
+					return asText(
+						JSON.stringify(await pipBlock(block, { over: params.over, corner: params.corner }), null, 2),
+					);
+				}
+				case "dock": {
+					require("dock");
+					return asText(JSON.stringify(await dockBlock(block, params.side), null, 2));
+				}
+				case "keep-open": {
+					require("keep-open");
+					return asText(JSON.stringify(await keepPaneOpen(block, params.open !== false), null, 2));
+				}
+				default:
+					throw new Error(`unknown action '${String(params.action)}'`);
+			}
+		},
+	});
+
 	const ctlTool = defineTool({
 		name: "tern_ctl",
 		label: "Tern control",
@@ -1374,12 +1524,34 @@ export default function piTern(pi: ExtensionAPI) {
 		name: "tern_diagnose",
 		label: "Tern diagnose",
 		description:
-			"Collect Tern integration diagnostics: environment, TSP probe, relay round trip, control endpoint, persisted state and versions.",
+			"Collect Tern integration diagnostics: environment, Tern release and TSP negotiation, the whoami identity chain, what this pane is running, the pi-bridge plugin's load status, the relay round trip, control endpoint, persisted state and versions.",
 		parameters: Type.Object({}),
 		async execute() {
 			const env = readTernEnv();
 			const version = await runTern(["--version"], 5000);
 			const relay = env.paneSocket ? await relayPing(env.paneSocket, 5000) : undefined;
+			const tern = await describeTern();
+			// 0.9 only: on an older build `process` is not a verb, and asking anyway would open a
+			// directory called `process`. The gate is what makes the answer "too old" rather than wrong.
+			const availability = await ternAvailable();
+			let process: PaneProcess | undefined;
+			let processError: string | undefined;
+			if (env.paneId && sessionVerbSupport(availability, "process").supported) {
+				try {
+					process = await paneProcess(env.paneId, undefined, 5000);
+				} catch (error) {
+					processError = error instanceof Error ? error.message : String(error);
+				}
+			}
+			let bridge: { installed: boolean; upToDate: boolean; version?: string; status?: string; problems?: unknown[] } = {
+				installed: false,
+				upToDate: false,
+			};
+			try {
+				bridge = await bridgeStatus();
+			} catch {
+				/* an unreadable plugin list reads as "not installed" */
+			}
 			return asText(
 				JSON.stringify(
 					{
@@ -1387,11 +1559,25 @@ export default function piTern(pi: ExtensionAPI) {
 						env,
 						probe: {
 							status: probe.status,
+							// The reason a reply was rejected is the difference between "no TSP here" and
+							// "this Tern speaks something newer"; both used to print as `absent`.
+							rejected: probe.rejected ?? null,
 							hello: probe.hello
-								? { v: probe.hello.v, ver: probe.hello.ver, kinds: probe.hello.kinds.length, features: probe.hello.features }
+								? {
+									v: probe.hello.v,
+									protocol: probe.hello.protocol,
+									ver: probe.hello.ver,
+									kinds: probe.hello.kinds.length,
+									features: probe.hello.features,
+									negotiation: negotiateHello(probe.hello),
+									summary: describeHello(probe.hello),
+								}
 								: null,
 						},
-						tern: version?.stdout.trim() ?? null,
+						tern: { ...tern, cliVersion: version?.stdout.trim() ?? null },
+						process,
+						...(processError ? { processError } : {}),
+						bridge,
 						relay,
 						control: loadState().control ?? env.windowSocket ?? null,
 						state: loadState(),
@@ -1482,24 +1668,56 @@ export default function piTern(pi: ExtensionAPI) {
 		name: "tern_bridge",
 		label: "Tern bridge",
 		description:
-			"The pi-bridge Tern canvas: a native Markdown dashboard of this pi session. Actions: install (writes and links the plugin), refresh (rewrite the dashboard), status.",
+			"The pi-bridge Tern canvas: a native Markdown dashboard of this pi session. Actions: install (writes, links and reloads the plugin, reporting Tern's load status), refresh (rewrite the dashboard), status (the installed copy against the shipped one, including Tern's own load status and problems), types (ask Tern for its plugin API declaration — `tern plugin types` — so an editor can type-check the Luau; needs Tern 0.9+).",
 		parameters: Type.Object({
-			action: Type.Union([Type.Literal("install"), Type.Literal("refresh"), Type.Literal("status")]),
+			action: Type.Union([
+				Type.Literal("install"),
+				Type.Literal("refresh"),
+				Type.Literal("status"),
+				Type.Literal("types"),
+			]),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			if (params.action === "install") {
 				refreshBridge(ctx);
 				const result = await linkBridge();
 				return asText(
-					`pi-bridge installed at ${result.dir} (link ${result.linkCode}, reload ${result.reloadCode}); press ctrl+shift+f10 in Tern`,
+					`pi-bridge installed at ${result.dir}${result.id ? ` (id ${result.id})` : ""}` +
+						` — link ${result.linkCode}, reload ${result.reloadCode}` +
+						`${result.status ? `, ${result.status}` : ""}${result.error ? ` — ${result.error}` : ""}; press ctrl+shift+f10 in Tern`,
 				);
 			}
 			if (params.action === "refresh") {
 				refreshBridge(ctx);
 				return asText("pi-bridge dashboard refreshed");
 			}
+			if (params.action === "types") {
+				const support = cliVerbSupport(await ternAvailable(), "plugin types");
+				if (!support.supported) throw new Error(support.reason ?? "tern plugin types needs Tern 0.9 or newer");
+				const dir = path.join(scratchDir(), "tern-plugin-types");
+				const written = await bridgeTypes(dir);
+				if (written.error) throw new Error(written.error);
+				const api = written.api;
+				return asText(
+					`Tern's plugin API declaration written to ${written.file} (add it to luau-lsp.types.definitionFiles)` +
+						(api
+							? `\n\nShipped Luau vs this declaration: ${api.used} symbols, ${api.declaredTern} tern paths, ${api.declaredTypes} cx types — ` +
+								(api.missing.length === 0 ? "nothing missing" : `MISSING ${api.missing.join(", ")}`)
+							: "\n\n(the declaration could not be read, so no API check was made)"),
+				);
+			}
+			const status = await bridgeStatus();
 			return asText(
-				JSON.stringify({ dir: bridgeDir(), installed: existsSync(path.join(bridgeDir(), "plugin.toml")) }, null, 2),
+				JSON.stringify(
+					{
+						dir: bridgeDir(),
+						filesPresent: existsSync(path.join(bridgeDir(), "plugin.toml")),
+						shippedVersion: PI_TERN_VERSION,
+						...status,
+					},
+					null,
+					2,
+				),
 			);
 		},
 	});
@@ -2193,6 +2411,7 @@ export default function piTern(pi: ExtensionAPI) {
 		browserTool,
 		captureTool,
 		panesTool,
+		sessionTool,
 		ctlTool,
 		mirrorTool,
 		watchTool,
@@ -2221,7 +2440,7 @@ export default function piTern(pi: ExtensionAPI) {
 
 	pi.registerCommand("tern", {
 		description:
-			"Tern integration: status | capabilities | agent-setup | files | browser | run | mirror | diagram | diagnose | restore | native | bridge",
+			"Tern integration: status | doctor | capabilities | whoami | agent-setup | files | browser | run | mirror | diagram | diagnose | restore | native | bridge",
 		handler: async (args, ctx) => {
 			const trimmed = (args ?? "").trim();
 			const [sub = "status"] = trimmed.split(/\s+/);
@@ -2229,7 +2448,39 @@ export default function piTern(pi: ExtensionAPI) {
 				switch (sub) {
 					case "status":
 					case "doctor": {
+						// `/tern doctor --json` is the machine-readable form: the same manifest the
+						// tern_status tool returns, because a human and an orchestrator asking the same
+						// question must not get two different answers about what is available.
+						if (/\s--json\b|\sjson\b/.test(trimmed)) {
+							const environment = await gatherEnvironment(readTernEnv());
+							ctx.ui.notify(
+								JSON.stringify(
+									buildManifest(
+										{
+											version: PI_TERN_VERSION,
+											directTools: [...DIRECT_TOOLS],
+											deferredTools: DEFERRED_TOOL_NAMES,
+											probe,
+											tspFeatures: probe.hello?.features,
+										},
+										environment,
+									),
+									null,
+									2,
+								),
+								"info",
+							);
+							return;
+						}
 						ctx.ui.notify(describeProbe(), "info");
+						return;
+					}
+					case "whoami": {
+						const tern = await describeTern();
+						ctx.ui.notify(
+							tern.identity ? `${tern.identityLine}\n\n${JSON.stringify(tern.identity, null, 2)}` : `identity: ${tern.identityLine}`,
+							tern.identity ? "info" : "warning",
+						);
 						return;
 					}
 					case "capabilities":
@@ -2270,16 +2521,24 @@ export default function piTern(pi: ExtensionAPI) {
 						// The block kind decides whether a native surface can be displayed at all, so it belongs
 						// in the one command people run when something looks broken.
 						const kind = env.paneId ? await paneKind(env.paneId).catch(() => undefined) : undefined;
+						const tern = await describeTern();
 						ctx.ui.notify(
 							JSON.stringify(
 								{
 									version: PI_TERN_VERSION,
 									env,
 									probe: probe.status,
+									// Why a TSP reply was unusable, when one arrived at all: `absent` alone cannot
+									// tell an older terminal from a newer protocol.
+									probeRejected: probe.rejected ?? null,
+									hello: probe.hello ? describeHello(probe.hello) : null,
 									// The launcher records why a handshake failed; without it, "native mode did
 									// not engage" has no cause and the only clue is that it sometimes works.
 									probeFailure: loadState().probeFailure ?? null,
 									tern: version.stdout.trim(),
+									tsp: probe.hello ? negotiateHello(probe.hello) : null,
+									identity: tern.identity,
+									sessionVerbs: tern.sessionVerbs,
 									block: kind ?? "unknown (no pane id, or the pi-bridge plugin did not answer)",
 									native: kind ? (kind.kind === "agent" ? "surfaces display here" : "falls back — surfaces display only in an agent block") : undefined,
 									relay,

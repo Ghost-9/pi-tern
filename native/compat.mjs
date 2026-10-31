@@ -26,16 +26,23 @@ const record = "/tmp/pi-tern-compat-record.jsonl";
 const TSP_PREFIX = "\x1b_tsp;";
 
 /**
- * Find the real pi. PATH first, because a developer's managed install is what this matrix is about;
- * then node_modules/.bin, because `@earendil-works/pi-coding-agent` is a devDependency so the
- * stock binary is available in CI even where nothing is globally installed.
+ * Find the real host. PATH first, because a developer's managed install is what this matrix is
+ * about; then node_modules/.bin, because `@earendil-works/pi-coding-agent` is a devDependency so the
+ * stock binary is available in CI even where nothing is globally installed. `pi-bolt` is the same
+ * package under another name, so it is searched alongside `pi` rather than reported as missing.
  */
 function resolvePi() {
-	const fromPath = spawnSync("sh", ["-c", "command -v pi"], { encoding: "utf8" });
-	const found = fromPath.stdout.trim();
-	if (found) return found;
-	const local = path.join(root, "node_modules", ".bin", "pi");
-	return existsSync(local) ? local : null;
+	// Both names are the same package; on a pi-bolt-only machine `pi` does not exist at all.
+	for (const name of ["pi", "pi-bolt"]) {
+		const fromPath = spawnSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8" });
+		const found = fromPath.stdout.trim();
+		if (found) return found;
+	}
+	for (const name of ["pi", "pi-bolt"]) {
+		const local = path.join(root, "node_modules", ".bin", name);
+		if (existsSync(local)) return local;
+	}
+	return null;
 }
 
 const PI = resolvePi();
