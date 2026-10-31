@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { BRIDGE_PLUGIN_TOML, BRIDGE_WINDOW_LUAU } from "./bridge-plugin.ts";
 import { TOOLS_PLUGIN_TOML, TOOLS_WINDOW_LUAU } from "./tools-plugin.ts";
+import { checkApi, type ApiCheck } from "./luau-api.ts";
 import { runTern, scratchDir } from "./tern.ts";
 import { PLUGIN_VERSION } from "./version.ts";
 
@@ -241,26 +242,118 @@ function readDashboardOrEmpty(): string {
 	}
 }
 
-export async function linkBridge(): Promise<{ dir: string; linkCode: number; reloadCode: number }> {
-	const dir = installBridgeFiles();
-	const link = await runTern(["plugin", "link", dir], 15000);
-	const reload = await runTern(["plugin", "reload"], 30000);
-	// Best effort: a failure here costs the tool panel, not the data plane.
-	await installToolsPlugin().catch(() => undefined);
-	return { dir, linkCode: link.code, reloadCode: reload.code };
+/** A plugin as `tern plugin list --json` reports it (0.9.8 shape, every field optional). */
+export interface PluginEntry {
+	id?: string;
+	name?: string;
+	version?: string;
+	status?: string;
+	window?: boolean;
+	host?: boolean;
+	/** Per-plugin problems are not in 0.9.8's list, but a newer build may add them. */
+	problems?: unknown[];
 }
 
-async function pluginList(): Promise<Array<{ id?: string; status?: string; problems?: unknown[]; version?: string }>> {
-	const result = await runTern(["plugin", "list", "--json"], 20000);
-	if (result.code !== 0) throw new Error(result.stderr.trim() || `tern plugin list exited ${result.code}`);
+/** The answer to `tern plugin list|reload --json`. */
+export interface PluginReport {
+	plugins: PluginEntry[];
+	/** Directory/global problems: a manifest that failed to parse, a copy that will not load. */
+	problems: unknown[];
+	jit?: boolean;
+	canvas?: boolean;
+}
+
+function parsePluginReport(stdout: string): PluginReport | null {
 	try {
-		const parsed = JSON.parse(result.stdout) as {
-			plugins?: Array<{ id?: string; status?: string; problems?: unknown[]; version?: string }>;
-		};
-		return parsed.plugins ?? [];
+		const parsed = JSON.parse(stdout) as PluginReport;
+		// 0.5.x printed a bare array from some verbs; accept both rather than reporting "no plugins".
+		if (Array.isArray(parsed)) return { plugins: parsed as PluginEntry[], problems: [] };
+		if (!parsed || !Array.isArray(parsed.plugins)) return null;
+		return { plugins: parsed.plugins, problems: Array.isArray(parsed.problems) ? parsed.problems : [], ...(parsed.jit !== undefined ? { jit: parsed.jit } : {}), ...(parsed.canvas !== undefined ? { canvas: parsed.canvas } : {}) };
 	} catch {
-		return [];
+		return null;
 	}
+}
+
+export interface BridgeLinkResult {
+	dir: string;
+	linkCode: number;
+	reloadCode: number;
+	/** The id Tern assigned, when `tern plugin link --json` named it. */
+	id?: string;
+	/** The version Tern read out of the manifest it just installed. */
+	version?: string;
+	/** `ready` when the daemon compiled it; absent when the build has no `--json` on these verbs. */
+	status?: string;
+	problems: unknown[];
+	/** Tern's own words when the link or the reload failed. */
+	error?: string;
+}
+
+export async function linkBridge(): Promise<BridgeLinkResult> {
+	const dir = installBridgeFiles();
+	const link = await runTern(["plugin", "link", dir, "--json"], 15000);
+	// `reload` is what makes the daemon compile it; without one the link only applies at next start.
+	const reload = await runTern(["plugin", "reload", "--json"], 30000);
+	// Best effort: a failure here costs the tool panel, not the data plane.
+	await installToolsPlugin().catch(() => undefined);
+
+	const result: BridgeLinkResult = { dir, linkCode: link.code, reloadCode: reload.code, problems: [] };
+	try {
+		const linked = JSON.parse(link.stdout) as { id?: string; version?: string };
+		if (typeof linked.id === "string") result.id = linked.id;
+		if (typeof linked.version === "string") result.version = linked.version;
+	} catch {
+		/* 0.5.x printed nothing here; the exit code is all there is */
+	}
+	const report = parsePluginReport(reload.stdout);
+	if (report) {
+		result.problems = report.problems;
+		const bridge = report.plugins.find((plugin) => plugin.id === "pi-bridge");
+		if (bridge?.status) result.status = bridge.status;
+		if (!bridge) result.error = "the daemon reloaded but does not list pi-bridge";
+		else if (result.problems.length > 0) result.error = `Tern reported ${result.problems.length} plugin problem(s)`;
+	}
+	if (link.code !== 0) result.error = (link.stderr || link.stdout).trim() || `tern plugin link exited ${link.code}`;
+	else if (reload.code !== 0) result.error = (reload.stderr || reload.stdout).trim() || `tern plugin reload exited ${reload.code}`;
+	return result;
+}
+
+/**
+ * Ask Tern to write its plugin API declaration into `dir`: `tern plugin types DIR` → `tern.d.luau`.
+ *
+ * This is the authoritative contract for the Luau this extension ships, so having the extension
+ * produce it is what lets an editor (luau-lsp) or `scripts/plugin-api-check.mjs` compare the two
+ * without a human hunting for the file. 0.5.x has no such verb, hence the code/error pair.
+ */
+export async function bridgeTypes(
+	dir: string,
+	timeoutMs = 20000,
+): Promise<{ file: string; code: number; error?: string; api?: ApiCheck }> {
+	mkdirSync(dir, { recursive: true });
+	const result = await runTern(["plugin", "types", dir, "--json"], timeoutMs);
+	// 0.9.8 answers `{"file": …}`; the documented destination is `DIR/tern.d.luau`, so the answer is
+	// preferred when it is there and the documented path is the fallback.
+	let file = path.join(dir, "tern.d.luau");
+	try {
+		const answered = JSON.parse(result.stdout) as { file?: unknown };
+		if (typeof answered.file === "string" && answered.file.length > 0) file = answered.file;
+	} catch {
+		/* no JSON: keep the documented path */
+	}
+	if (result.code !== 0) {
+		const error = (result.stderr || result.stdout).trim() || `tern plugin types exited ${result.code}`;
+		return { file, code: result.code, error };
+	}
+	// The declaration is only worth writing if the Luau this build ships still matches it: that is
+	// the drift check, and it costs one read because the file was just written.
+	let api: ApiCheck | undefined;
+	try {
+		api = checkApi(readFileSync(file, "utf8"), [BRIDGE_WINDOW_LUAU, TOOLS_WINDOW_LUAU]);
+	} catch {
+		/* an unreadable declaration is reported as "no check", not as a match */
+	}
+	return { file, code: result.code, ...(api ? { api } : {}) };
 }
 
 /**
@@ -269,14 +362,31 @@ async function pluginList(): Promise<Array<{ id?: string; status?: string; probl
  * A window plugin's Luau is only compiled when a window starts, so a plugin can report
  * `ready` with `problems: []` while still running last release's code. Comparing the
  * version is what actually catches a stale install.
+ *
+ * `status` and `problems` come from the same JSON now: a plugin that Tern reports as failed to
+ * load is not "up to date" however well its version matches, and before 1.2 the manifest would
+ * have said `bridge: installed, upToDate` about it.
  */
-export async function bridgeStatus(): Promise<{ installed: boolean; version?: string; upToDate: boolean }> {
+export async function bridgeStatus(): Promise<{
+	installed: boolean;
+	version?: string;
+	upToDate: boolean;
+	status?: string;
+	problems?: unknown[];
+}> {
 	try {
-		const plugins = await pluginList();
-		const bridge = plugins.find((plugin) => plugin.id === "pi-bridge");
-		if (!bridge) return { installed: false, upToDate: false };
+		const result = await runTern(["plugin", "list", "--json"], 20000);
+		if (result.code !== 0) return { installed: false, upToDate: false };
+		const report = parsePluginReport(result.stdout);
+		const bridge = report?.plugins.find((plugin) => plugin.id === "pi-bridge");
+		if (!report || !bridge) return { installed: false, upToDate: false, ...(report ? { problems: report.problems } : {}) };
+		const problems = [...report.problems, ...(Array.isArray(bridge.problems) ? bridge.problems : [])];
+		const status = bridge.status;
 		const expected = BRIDGE_PLUGIN_TOML.match(/version = "([^"]+)"/)?.[1];
-		if (bridge.version !== expected) return { installed: true, version: bridge.version, upToDate: false };
+		const base = { installed: true, ...(bridge.version ? { version: bridge.version } : {}), ...(status ? { status } : {}), problems };
+		if (bridge.version !== expected) return { ...base, upToDate: false };
+		if (status !== undefined && status !== "ready") return { ...base, upToDate: false };
+		if (problems.length > 0) return { ...base, upToDate: false };
 		// The version matches, but the deployed files can still be older than what this extension
 		// ships: a window entry is compiled at window start, so a stale copy keeps running old code
 		// while everything reports itself current. Compare the recorded content id.
@@ -287,7 +397,7 @@ export async function bridgeStatus(): Promise<{ installed: boolean; version?: st
 		} catch {
 			recorded = null;
 		}
-		return { installed: true, version: bridge.version, upToDate: recorded === bridgeBuildId() };
+		return { ...base, upToDate: recorded === bridgeBuildId() };
 	} catch {
 		return { installed: false, upToDate: false };
 	}
@@ -297,18 +407,32 @@ export async function bridgeStatus(): Promise<{ installed: boolean; version?: st
  * One-install promise: pi-tern alone is enough. On first session start inside Tern the
  * bridge plugin is linked automatically; later starts only refresh its files.
  */
-export async function ensureBridge(): Promise<{ installed: boolean; dir: string; upToDate: boolean }> {
+export async function ensureBridge(): Promise<{
+	installed: boolean;
+	dir: string;
+	upToDate: boolean;
+	status?: string;
+	problems?: unknown[];
+}> {
 	try {
 		const status = await bridgeStatus();
 		if (status.installed) {
 			// Only rewrite when the shipped Luau actually differs. A window plugin is compiled at
 			// window start, so a stale copy silently keeps running old code — hence the version check
-			// rather than a blind reinstall on every session start.
+			// rather than a blind reinstall on every session start. A plugin Tern reports as failed
+			// (`status: "error"` or a non-empty `problems`) is rewritten for the same reason: leaving
+			// a broken copy in place because its version string matched is how a panel stays dead.
 			if (!status.upToDate) {
 				installBridgeFiles();
-				await runTern(["plugin", "reload"], 30000);
+				await runTern(["plugin", "reload", "--json"], 30000);
 			}
-			return { installed: false, dir: bridgeDir(), upToDate: status.upToDate };
+			return {
+				installed: false,
+				dir: bridgeDir(),
+				upToDate: status.upToDate,
+				...(status.status ? { status: status.status } : {}),
+				...(status.problems ? { problems: status.problems } : {}),
+			};
 		}
 	} catch {
 		/* fall through to install */
