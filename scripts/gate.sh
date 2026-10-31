@@ -39,6 +39,13 @@ UNIT_TESTS=(
 	test/fleet-prune.test.ts
 	test/package.test.ts
 	test/native-sink.test.ts
+	test/tsp-hello.test.ts
+	test/version-gate.test.ts
+	test/session.test.ts
+	test/host.test.ts
+	test/plugin-api.test.ts
+	test/host-load.test.ts
+	test/tern-live.test.ts
 )
 
 failures=0

@@ -136,6 +136,14 @@ done
 # `tern plugin list` reads the installed manifests, so it is a different fact from "loaded": the
 # whole point of this script is that `ready` and "actually loaded" are not the same. Keep both, and
 # say which is which.
+#
+# A third state is needed since Tern 0.9.8. On 0.5.2 a headless session logged every window entry it
+# compiled (`pi-bridge: …`) and the syntax-error line for one it could not. Measured on 0.9.8, in
+# `~/Library/Logs/Tern/tern-serve.log`: a `tern serve` logs neither — not even for a window.luau with
+# `this is not lua` appended, while `tern plugin reload` answers `status: "ready"`. So the absence of
+# a failure is no longer evidence of a load, and reporting `ok … loaded` there would be a green tick
+# for a test that did not run. The plugin is reported UNVERIFIED instead, with what was looked for.
+UNVERIFIED=0
 for PLUGIN in $PLUGINS; do
 	if printf '%s' "$NEW" | grep -q "plugin window entry failed to load plugin=\"$PLUGIN\""; then
 		echo "FAIL: $PLUGIN did not load after $ATTEMPTS attempt(s):"
@@ -144,11 +152,24 @@ for PLUGIN in $PLUGINS; do
 		continue
 	fi
 	STATUS=$(tern plugin list 2>/dev/null | grep -E "^$PLUGIN " | head -1)
-	echo "ok   $PLUGIN loaded${STATUS:+ - manifest: $STATUS}"
+	# Positive evidence that the window half ran: a log line from the plugin itself, or the loader's
+	# own success line. Neither is guaranteed, which is why this is a third state and not a pass.
+	if printf '%s' "$NEW" | grep -q -e "$PLUGIN: " -e "plugin window entry loaded plugin=\"$PLUGIN\""; then
+		echo "ok   $PLUGIN loaded${STATUS:+ - manifest: $STATUS}"
+	else
+		echo "UNVERIFIED $PLUGIN - this Tern logged no window-entry line for it${STATUS:+ (manifest: $STATUS)};"
+		echo "           a window start is what compiles a window entry on 0.9.8 — set PI_TERN_PLUGIN_WINDOW=1 to test one"
+		UNVERIFIED=$((UNVERIFIED + 1))
+	fi
 done
 
 if [ "$failed" -ne 0 ]; then
 	exit 1
+fi
+if [ "$UNVERIFIED" -ne 0 ]; then
+	echo "     (${#NEW} log bytes since the reload, no load failure; opened no window; $UNVERIFIED unverified)"
+	echo "     the Luau's declared API is checked statically by scripts/plugin-api-check.mjs and test/plugin-api.test.ts"
+	exit 0
 fi
 echo "     (${#NEW} log bytes since the reload, no load failure; opened no window)"
 exit 0
