@@ -82,6 +82,25 @@ export function parsePaneProcess(raw: unknown): PaneProcess | null {
 	return parsed;
 }
 
+/**
+ * A user-supplied value that Tern's own parser would read as an option.
+ *
+ * Measured on 0.9.8: `tern rename "@focused" "--window=0"` swallows the value as a flag and then
+ * fails with a usage error that names neither the flag nor the value, and `tern move --nonsense`
+ * answers `unknown flag --nonsense`. A leading `-` is therefore always an option, never a name or a
+ * block id. `--` does not rescue it either — `tern rename -- A B` is still a usage error — so the
+ * value has to be refused here rather than escaped at the call site.
+ */
+function value(raw: string | number, what: string): string {
+	const text = String(raw);
+	if (text.startsWith("-")) {
+		throw new Error(
+			`${what} cannot start with '-' because Tern reads it as a flag: ${JSON.stringify(text)}`,
+		);
+	}
+	return text;
+}
+
 /** Run one `--json` verb and parse the answer, with Tern's own message when it refuses. */
 async function runJson(run: Runner, args: string[], timeoutMs: number): Promise<unknown> {
 	const result = await run(args, timeoutMs);
@@ -99,14 +118,14 @@ async function runJson(run: Runner, args: string[], timeoutMs: number): Promise<
 
 /** What is running in a pane: `tern process BLOCK --json`. */
 export async function paneProcess(block: string | number, run: Runner = runTern, timeoutMs = 15000): Promise<PaneProcess> {
-	const parsed = parsePaneProcess(await runJson(run, ["process", String(block), "--json"], timeoutMs));
+	const parsed = parsePaneProcess(await runJson(run, ["process", value(block, "block"), "--json"], timeoutMs));
 	if (!parsed) throw new Error("tern process answered with no pane");
 	return parsed;
 }
 
 /** `tern rename SESSION|BLOCK NAME --json`. */
 export async function renameTarget(target: string, name: string, run: Runner = runTern, timeoutMs = 15000): Promise<SessionResult> {
-	return (await runJson(run, ["rename", target, name, "--json"], timeoutMs)) as SessionResult;
+	return (await runJson(run, ["rename", value(target, "target"), value(name, "name"), "--json"], timeoutMs)) as SessionResult;
 }
 
 export type MoveHow = "below" | "above" | "left-of" | "right-of";
@@ -119,7 +138,11 @@ export async function moveBlock(
 	run: Runner = runTern,
 	timeoutMs = 15000,
 ): Promise<SessionResult> {
-	return (await runJson(run, ["move", String(block), how, String(destination), "--json"], timeoutMs)) as SessionResult;
+	return (await runJson(
+		run,
+		["move", value(block, "block"), how, value(destination, "destination"), "--json"],
+		timeoutMs,
+	)) as SessionResult;
 }
 
 export type Corner = "tl" | "tr" | "bl" | "br";
@@ -131,8 +154,8 @@ export async function pipBlock(
 	run: Runner = runTern,
 	timeoutMs = 15000,
 ): Promise<SessionResult> {
-	const args = ["pip", String(block)];
-	if (options.over !== undefined) args.push("--over", String(options.over));
+	const args = ["pip", value(block, "block")];
+	if (options.over !== undefined) args.push("--over", value(options.over, "over"));
 	if (options.corner) args.push("--corner", options.corner);
 	args.push("--json");
 	return (await runJson(run, args, timeoutMs)) as SessionResult;
@@ -147,7 +170,7 @@ export async function dockBlock(
 	run: Runner = runTern,
 	timeoutMs = 15000,
 ): Promise<SessionResult> {
-	const args = ["dock", String(block)];
+	const args = ["dock", value(block, "block")];
 	if (side) args.push(side);
 	args.push("--json");
 	return (await runJson(run, args, timeoutMs)) as SessionResult;
@@ -160,5 +183,5 @@ export async function keepPaneOpen(
 	run: Runner = runTern,
 	timeoutMs = 15000,
 ): Promise<SessionResult> {
-	return (await runJson(run, ["keep-open", String(block), open ? "on" : "off", "--json"], timeoutMs)) as SessionResult;
+	return (await runJson(run, ["keep-open", value(block, "block"), open ? "on" : "off", "--json"], timeoutMs)) as SessionResult;
 }

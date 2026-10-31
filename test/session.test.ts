@@ -153,3 +153,35 @@ test("a refusal quotes Tern's own message instead of a stack trace", async () =>
 	const empty = fakeRunner({}, 0);
 	await assert.rejects(() => paneProcess(3, empty), /answered with no pane/);
 });
+
+/**
+ * A leading `-` is an option to Tern, not a name.
+ *
+ * Measured on 0.9.8: `tern rename "@focused" "--window=0"` swallows the value as a flag and then
+ * fails with a usage error that names neither the flag nor the value, and `tern move --nonsense`
+ * answers `unknown flag --nonsense`. `--` does not rescue it either (`tern rename -- A B` is still
+ * a usage error), so an option-shaped value has to be refused here rather than escaped later. All
+ * of these values come from a model through a deferred tool, which is exactly the caller that will
+ * never notice the difference between "renamed the wrong tab" and "renamed nothing".
+ */
+test("a value that Tern would read as a flag is refused before it reaches Tern", async () => {
+	const run = fakeRunner({});
+	const cases: Array<[string, () => Promise<unknown>]> = [
+		["block", () => paneProcess("--window=0", run)],
+		["target", () => renameTarget("--window=0", "name", run)],
+		["name", () => renameTarget("@focused", "--window=0", run)],
+		["move destination", () => moveBlock(3, "below", "-1", run)],
+		["pip over", () => pipBlock(3, { over: "-1" }, run)],
+		["keep-open block", () => keepPaneOpen("-3", true, run)],
+	];
+	for (const [what, call] of cases) {
+		await assert.rejects(call, /cannot start with '-'/, what);
+	}
+	assert.deepEqual(run.calls, [], "nothing was run");
+});
+
+test("ordinary values still reach Tern unchanged", async () => {
+	const run = fakeRunner({});
+	await renameTarget("@focused", "my-tab", run);
+	assert.deepEqual(run.calls.at(-1), ["rename", "@focused", "my-tab", "--json"], "a hyphen inside a name is fine");
+});
