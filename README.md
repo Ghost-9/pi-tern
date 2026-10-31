@@ -25,7 +25,11 @@ The extension itself never writes TSP frames, so pi's renderer is not disturbed 
 
 | Feature | Status | What it does |
 | --- | --- | --- |
-| TSP handshake | stable | Sends `hello` + DA1 on the pty and reads the reply through pi's raw input. Verified against Tern **0.5.1**, whose reply advertises 44 node kinds and 10 features. That is *Tern's* vocabulary, not pi-tern's usage — pi-tern gates on three of them (`image`, `chart`, `aside`) and emits six node kinds |
+| TSP handshake | stable | Sends `hello` + DA1 on the pty and reads the reply through pi's raw input. Verified against Tern **0.9.8** (`f21d9a3`), whose reply advertises **46 node kinds and 9 features** — 0.5.x's 44/10 with `row`/`media` added and `program-palette` dropped — and against **0.5.x**, whose 44/10 reply still parses. The hello is feature-detected rather than pinned: any `v >= 1` is used (a newer one is flagged, not refused), unknown kinds/features are reported instead of dropped, and a reply this build cannot read records *why* in `/tern doctor` instead of reporting `absent`. That is *Tern's* vocabulary, not pi-tern's usage — pi-tern gates on three features (`image`, `chart`, `aside`) and emits seven node kinds. Measurements: [`docs/TERN-0.9.md`](docs/TERN-0.9.md) |
+| Tern version negotiation | stable | `tern --version` is parsed (`0.9.8 (f21d9a3)` → version + commit) and the 0.9-only verbs are gated with a reason that names the version needed, including in the capability manifest. A 0.5.x Tern keeps every 1.1 feature and simply reports the newer ones as unavailable. `PI_TERN_FORCE=1` bypasses the gate for a fork that backports a verb |
+| Session identity | stable | `tern_session whoami` and `/tern whoami`: Tern 0.9's identity chain (`principal`, `host`, `method`, every hop) from `TERN_IDENTITY` when the pane exports it, else `tern whoami --json`. This is the first honest answer to "who and where is this pane" — 0.5-era code inferred it from `TERM_PROGRAM` and a socket path, which cannot tell a local pane from an SSH one. Also reported in `tern_status`, `tern_diagnose` and the manifest |
+| Pane processes | stable | `tern_session process` reads `tern process --json`: the pid, argv and cwd of the block's program *and* what holds the terminal now. `tern_diagnose` includes it for the current pane, so "what is this pane actually running" stops being a capture-and-read |
+| Session layout | experimental | `tern_session pip|dock|move|rename|keep-open` wrap `tern pip`, `dock`, `move`, `rename` and `keep-open`. Measured on 0.9.8 headlessly only as far as Tern's own refusals ("picture in picture needs a second block in its tab"); the arrangement was never seen on screen here, so it is labelled experimental |
 | Mermaid diagrams | stable | `tern_diagram` / `/tern diagram` opens a file block rendered by Tern's merman engine (18 diagram types, including `xychart-beta` bar/line charts). `--last` uses the newest fence in the conversation; `pin` keeps one path so re-renders update the same block |
 | Charts | stable | `tern_chart` draws bar/hbar, line, area, pie and donut from plain data as a themed SVG that Tern renders as a native image block. `png: true` rasterizes it locally so the model can read the chart back. Value labels keep full precision |
 | Fleet panes | stable | `tern_fleet` treats a Tern pane as a thread: `spawn` (a `pi -p` task, an interactive pi, or any command) · `list` with liveness · `send` to steer · `read` · `wait` · `stop` · `prune`. Task text goes through a file, so prompts cannot break the shell. Panes are spawned with `--keep-open` so a finished task's output survives; `prune` closes those that exited and have been idle past a floor (default 30m), reporting why it kept each one it did not touch. `dryRun: true` first |
@@ -42,24 +46,26 @@ The extension itself never writes TSP frames, so pi's renderer is not disturbed 
 | Pane events | stable | `tern_watch` waits for daemon events (`pane_exited`, …) with an optional pane filter, so pi can wait for a test run or server instead of polling |
 | Pane output waits | stable | `tern_watch --expect <regex>` polls a pane until it prints a pattern (dev servers, builds) and returns the tail |
 | Browser suite | stable | relay/CLI ops, stale-ref recovery, named PNG baselines, network capture (Resource Timing HAR-lite), PDF export, multi-tab listing/close, form-field helper |
-| pi-bridge canvas | experimental | linked automatically on the first Tern session — installing pi-tern is enough; renders a native Markdown dashboard with a session TOC and recent activity (`ctrl+shift+f10`); `PI_TERN_BRIDGE=0` disables |
+| pi-bridge canvas | experimental | linked automatically on the first Tern session — installing pi-tern is enough; renders a native Markdown dashboard with a session TOC and recent activity (`ctrl+shift+f10`); `PI_TERN_BRIDGE=0` disables. `tern_bridge status` now reports Tern's own load verdict (`status`, `problems`) instead of only a version match |
+| Plugin API check | stable | `tern_bridge types` runs `tern plugin types` (0.9+) and compares the declaration with every `tern.*` and `cx.*:method` the shipped Luau uses, so API drift is a message instead of a panel that quietly stops updating. `scripts/plugin-api-check.mjs` does the same from a terminal, against a pinned 0.9.8 fixture or the live build |
 | Tool results panel | experimental | a second Tern plugin rendering what your tools produced as **native widgets**: a `git diff` as a real diff view, a file read as highlighted code, a test run as a pass/fail/skip meter. Open with `ctrl+shift+f11`. Classified by `lib/toolresults.ts`; falls back to muted text when nothing fits, because a confident-looking 0/0/0 meter is worse than the text it replaced |
 | Golden shots | stable | `tern_shot` renders scenario files to PNG + layout JSON (`tern shot`) |
 | UI test harness | stable | `tern_ui_test` / `/tern ui-test <scenario> [expect]` runs a scenario and asserts against a control endpoint |
 | Diagram pipelines | stable | `--from "<cmd>"` renders mermaid from a command's output; `git` renders the repo as a gitGraph |
 | Credential guard | stable | `tern_db` refuses credential-looking tables and agent/models stores unless `allowSecret:true` |
 | Remote hosts | stable | `tern_remote` lists or discovers Tern remote hosts |
-| Diagnostics | stable | `tern_diagnose` and `/tern diagnose`: environment, probe, relay round trip, control endpoint, persisted state |
+| Diagnostics | stable | `tern_diagnose` and `/tern diagnose`: environment, Tern release and TSP negotiation, the identity chain, what this pane runs, the plugin's load status, relay round trip, control endpoint, persisted state. `/tern doctor --json` is the machine-readable manifest |
 | Control endpoint | stable | `/tern control [window|headless]` starts a Tern window or headless session with a control socket; `tern_ctl` uses it automatically |
 | Restore | stable | `/tern restore` reopens the session mirror and the last pinned diagram; state survives Tern/pi restarts |
 | Live tab title | stable | `π <model> · <context> · <dir>`, refreshed after startup and on every turn |
 | Attention bell | opt-in | `PI_TERN_BELL=1` rings Tern's bell when pi finishes a turn |
 | Native Tern surfaces | opt-in | Tern owning the transcript/composer/dock. Reached through the `pi-tern` launcher, not the extension: pi runs under a loader hook that hands rendering to Tern. Only in an **agent block**, and only inside Tern — see [Limitations](#limitations) |
+| pi-bolt hosts | stable | Every host path resolves the agent binary from evidence (`PI_TERN_AGENT`, then `PI_TERN_LAUNCHER`, then `pi`, then `pi-bolt`) instead of hard-coding `pi`, so `tern_fleet` works on a machine whose host is pi-bolt — the same package at the same version under a different name. `test/host-load.test.ts` loads this extension under every installed host and asserts `/tern` registers |
 
 ## Requirements
 
-- **Tern 0.5.1 or newer**, running (closed beta; a Stencil account comes from Tern itself). Verified against **0.5.2** (`21a6de4`): the TSP vocabulary is byte-identical to 0.5.1 — same 44 node kinds in the same order, same 10 features, same `hello` fields — and the plugin window API is byte-identical (`tern.d.luau`, md5 `d39773c7…`). 0.4.5 was the floor when the extension first shipped.
-- pi 1.0.x
+- **Tern 0.5.1 or newer**, running (closed beta; a Stencil account comes from Tern itself). **Verified against 0.9.8 (`f21d9a3`)** on 2026-10-31: the TSP reply is still `v: 1` with 46 kinds and 9 features, the surface ops pi-tern sends (`o`, `add`, `set`, `del`, the `col`/`rows`/`md`/`image`/`chart`/`card`/`aside` nodes) are all accepted and `blob` is still rejected, the daemon relay handshake is unchanged, and the shipped Luau is declared-compatible with `tern plugin types` (79 symbols, 0 missing). 0.9's new verbs (`whoami`, `process`, `pip`, `dock`, `plugin types`) are gated on the version and reported as unavailable below it. Full measurements and the commands that produced them: [`docs/TERN-0.9.md`](docs/TERN-0.9.md).
+- **pi 1.0 or newer**, stock **or pi-bolt** (same `@earendil-works/pi-coding-agent` package; the devDependency pins the runtime this is typechecked against). Nothing assumes the executable is named `pi`.
 - macOS or Linux. **Not functional inside tmux, screen or zellij:** those swallow APC strings, so the TSP handshake never completes and the pane-only features stay inert. The CLI-backed tools (`tern_chart`, `tern_worktree`, `tern_pr`) do not depend on the handshake and keep working.
 
 ### Do I need to run pi *inside* Tern?
@@ -159,6 +165,8 @@ Commands:
 /tern restore                 reopen the mirror and the last pinned diagram
 /tern control [window|headless]  start a control endpoint for tern_ctl
 /tern bridge install|refresh|status  install the pi-bridge Tern canvas
+/tern bridge types            ask Tern for its plugin API and check the shipped Luau
+/tern whoami                  the identity chain of this pane (Tern 0.9+)
 /tern diagram <mermaid>       render a diagram through Tern's merman engine
 /tern diagram --last [--pin]  render the newest Mermaid fence in the conversation
 /tern mirror on|off|open      mirror the conversation into a Markdown block
@@ -168,7 +176,7 @@ Commands:
 /tern title | bell            apply the title, or ring the bell once
 ```
 
-Model-callable tools: `tern_status`, `tern_run`, `tern_browser` are declared; `tern_diagram`, `tern_capture`, `tern_panes`, `tern_ctl`, `tern_mirror`, `tern_watch`, `tern_diagnose`, `tern_shot`, `tern_remote`, `tern_bridge`, `tern_db`, `tern_doc`, `tern_board`, `tern_carly`, `tern_notebook`, `tern_settings`, `tern_ui_test` are deferred and callable from codemode scripts by name (listed in `tern_status`).
+Model-callable tools: `tern_status`, `tern_run`, `tern_browser` are declared; `tern_diagram`, `tern_capture`, `tern_panes`, `tern_session`, `tern_ctl`, `tern_mirror`, `tern_watch`, `tern_diagnose`, `tern_shot`, `tern_remote`, `tern_bridge`, `tern_db`, `tern_doc`, `tern_board`, `tern_carly`, `tern_notebook`, `tern_settings`, `tern_ui_test` are deferred and callable from codemode scripts by name (listed in `tern_status`).
 
 Examples:
 
@@ -195,7 +203,7 @@ Start a session mirror so I can read this conversation natively.
 ## Prompt footprint
 
 Only three tools are declared to the model — `tern_status`, `tern_run`, `tern_browser`. The other
-sixteen are `deferred`: they do not appear in the prompt and are callable from codemode scripts by
+seventeen are `deferred`: they do not appear in the prompt and are callable from codemode scripts by
 name (the names are listed in `tern_status`). Measured cost of the whole extension: **+774 prompt
 tokens** (21,704 → 22,478), down from +1,309 in 0.8.0 and +3,679 in 0.7.0. See
 [docs/BENCHMARKING.md](docs/BENCHMARKING.md).
