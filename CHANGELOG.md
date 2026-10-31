@@ -1,5 +1,137 @@
 # Changelog
 
+## 1.2.0 - 2026-10-31
+
+**pi-tern targeted Tern 0.5.x; the Tern on this machine is 0.9.8.** This release closes that gap with
+evidence, adds the 0.9 capabilities that replace a heuristic with an answer, and makes the version
+difference a *reported fact* rather than a silent one. Measurements, commands and the list of what is
+still unverified: [`docs/TERN-0.9.md`](docs/TERN-0.9.md).
+
+### What the 0.5 → 0.9 audit actually found
+
+The feared break — a TSP version bump — did not happen: **0.9.8 still answers `v: 1`**, and every
+frame pi-tern sends is still accepted (`o`, `add`, `set`, `del`, the `col`/`rows`/`md`/`image`/`chart`/
+`card`/aside nodes). `blob` is still rejected, for the same reason as before (it is a plugin API, not
+a frame op). The daemon relay handshake on `TERN_PANE_SOCKET` is unchanged, though that variable now
+names the *daemon* socket rather than a per-pane one.
+
+What did move is the vocabulary: **46 node kinds instead of 44** (`row`, `media` added) and **9
+features instead of 10** (`program-palette` removed), plus a new `hour12` field. Nothing pi-tern gates
+on (`image`, `chart`, `aside`, `blobs`) was removed — this time. That is the reason `asHello` is no
+longer a hard equality.
+
+### The parser could have failed silently, so it was rewritten
+
+`asHello` required `hello.v === 1 && Array.isArray(hello.kinds)`. A build that answered `v: 2`, or
+one that moved its vocabulary behind a call, would have made detection report `absent` — the same
+word `absent` already used for "this terminal does not speak TSP" — and the surface layer would have
+stood down with no explanation. Now:
+
+- any `v >= 1` is used (a newer one is treated as the v1 subset and flagged `future`), including
+  `v: [1]` and `"1"`;
+- `kinds`/`features` normalize from arrays or comma/space strings, and an absent vocabulary is
+  "cannot prove it is missing" rather than "unsupported";
+- unknown kinds, features and fields are **reported** (`negotiateHello`, `TspHello.extra`) instead of
+  dropped;
+- a reply that is unusable records *why* (`probe.rejected`) and `/tern doctor` prints it.
+
+12 new unit tests pin all of that, including the hypothetical `v: 2` body and garbage.
+
+### `tern --version` is parsed, and the 0.9 verbs are gated on it
+
+There was no version handling at all: every call assumed the verb existed. On a build without it
+`tern whoami` is not an error message — the CLI treats an unknown first argument as a directory, so a
+missing verb reads as `No such file or directory` and looks like a broken install. Now
+`parseTernVersion("0.9.8 (f21d9a3)")` yields version + commit, `versionAtLeast` compares numerically,
+and `cliVerbSupport()` turns "too old" into a reason that names the version needed. A 0.5.x Tern keeps
+every 1.1 feature; the newer verbs appear as unavailable with that sentence. `PI_TERN_FORCE=1` still
+bypasses the gate.
+
+`TERN_CONFIG_DIR` is honoured by `ternSettingsPath()`. A 0.9.x pane exports it, and writing
+`new_blocks`/`agent_command` into a hard-coded Application Support path while Tern reads another
+directory reports success and changes nothing.
+
+### New: `tern_session` (identity, process, layout)
+
+One deferred tool, seven verbs, all `--json`:
+
+- **`whoami`** — Tern's identity chain (`{hops:[{principal,method,from,host,user}]}`), read from
+  `TERN_IDENTITY` when the pane exports it (no subprocess) and from `tern whoami --json` otherwise.
+  This is the first honest answer to "who and where is this pane"; the 0.5-era alternative was an
+  inference from `TERM_PROGRAM` and a socket path that cannot tell a local pane from an SSH one. Also
+  in `tern_status`, `tern_diagnose`, `/tern whoami` and the manifest.
+- **`process`** — the pid, argv and cwd of a block's program *and* what holds the terminal now, which
+  is what `tern_capture` and `tern_panes` cannot say. `tern_diagnose` reports it for the current pane.
+- **`pip` / `dock` / `move` / `rename` / `keep-open`** — the 0.9 layout verbs. Measured headlessly only
+  as far as Tern's own refusals, so the manifest marks `session.layout` **experimental** and the
+  README says the same. Nothing here is claimed to be seen on screen.
+
+### The plugin is installed and checked like a contract, not by hand
+
+- `tern plugin link --json` / `reload --json` are parsed: `bridgeStatus()` now reports Tern's own
+  `status` and `problems`, and a plugin Tern says failed to load is no longer "up to date" because its
+  version string matched.
+- `tern_bridge types` runs `tern plugin types` (0.9+) and compares the declaration with every
+  `tern.*` path and `cx.*:method` the shipped Luau uses. `scripts/plugin-api-check.mjs` does the same
+  from a terminal; the 0.9.8 declaration is pinned in `test/fixtures/tern-api-0.9.8.json`, so the
+  check runs with no Tern installed. Today: **79 symbols used, 0 missing**.
+- `tern plugin reload` reporting `status: "ready"` is *not* evidence the Luau compiles — measured by
+  appending `this is not lua` and reloading. That is why the check is static.
+
+### A verification regression worth knowing about
+
+`scripts/plugin-check.sh` proved a window entry loads by grepping Tern's log for a load-failure line
+after a headless `tern serve`. **On 0.9.8 a headless `serve` logs no window-entry lines at all** — not
+even for a deliberately broken `window.luau` — so the old success path was a green tick for a test
+that had not run. It now reports `UNVERIFIED` for that case and points at the static check. The gate
+still passes; the claim is smaller and true.
+
+### pi-bolt, without special-casing Pi
+
+`pi` and `pi-bolt` are the same `@earendil-works/pi-coding-agent` package under two names. Every
+agent-spawning path hard-coded `pi`, which on a bolt-only machine opens panes running
+`pi: command not found` while everything else reports healthy. `lib/host.ts` resolves it from
+evidence — `PI_TERN_AGENT`, `PI_TERN_LAUNCHER`, `pi`, `pi-bolt` — and `native/pi-tern.mjs` /
+`native/compat.mjs` fall back to `pi-bolt` too, with `pi` still preferred when both exist.
+`test/host-load.test.ts` loads this extension under **every installed host** (stock 1.4.0 from the
+devDependency and the pi-bolt build here) via `--mode rpc` and asserts `/tern` registers.
+
+The devDependency moves **1.0.4 → 1.4.0**, the runtime both hosts actually ship, so `tsc` validates
+against the real API instead of one nine minor versions old. It was clean; the pin was stale, not
+wrong.
+
+### Manifest and diagnostics
+
+- `environment.tern`: version, commit, whether the 0.9 verbs are available, `TERN_CONFIG_DIR`, the
+  daemon socket, and the identity chain.
+- `tsp.negotiation`: version, `future`, known/unknown kinds and features, and the four gates pi-tern
+  uses.
+- every capability gains `maturity` (`stable` | `experimental`), so an orchestrator can tell a
+  measurement from a wiring.
+- new capabilities: `pane.process`, `session.identity`, `session.layout`, `plugin.types`, each with
+  the version reason it needs.
+- `/tern doctor --json` is the manifest as JSON; `/tern doctor`, `/tern status`, `tern_status` and
+  `tern_diagnose` all report the same Tern release, TSP negotiation and identity.
+
+### Tests: 136 → 188
+
+12 tolerant-hello tests, 10 version/gating tests, 9 identity + session tests, 6 host-resolution
+tests, 4 plugin-API tests, 4 host-load tests, and **5 live tests that skip with a reason** when Tern
+or a GUI is unavailable:
+
+- `tern serve` + `tern ctl state|tree` — a real headless window answers;
+- a real `tern daemon`: link the shipped plugin, assert Tern reports its version and `status: ready`
+  with no problems;
+- `whoami --json` and `process --json` inside a real pane;
+- `tern plugin types` compared with the shipped Luau;
+- `tern shot`, which skips with the STENCIL_FIXTURE_ROOT message that 0.9.8 actually prints.
+
+Each live test isolates itself with `TERN_CONFIG_DIR` and a socket inside a temp directory, so no test
+touches the developer's Tern settings, plugins or sessions.
+
+Verified: `npm test` **188 tests, 187 pass, 1 skipped (tern shot), 0 fail**; `npm run typecheck`
+clean; `npm run lint` clean.
+
 ## 1.1.12 - 2026-10-07
 
 **Testing was opening GUI windows it had no reason to open, and leaking one per run.**

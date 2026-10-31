@@ -9,8 +9,12 @@ daemon relay.
 | Module | Responsibility |
 | --- | --- |
 | `index.ts` | extension factory: probe lifecycle, Phase A features, tools, `/tern` command |
-| `lib/tsp.ts` | TSP v1 framing/parsing, `hello` encode, DA1 detection |
-| `lib/tern.ts` | Tern detection (`TERM_PROGRAM`), `tern` CLI runner, scratch dir |
+| `lib/tsp.ts` | TSP v1 framing/parsing, `hello` encode, DA1 detection, **tolerant hello parsing + version negotiation** (`parseHello`, `negotiateHello`, `supportsKind/Feature`) |
+| `lib/tern.ts` | Tern detection (`TERM_PROGRAM`), `tern` CLI runner, scratch dir, **`--version` parsing, 0.9 verb gating, `TERN_CONFIG_DIR`** |
+| `lib/identity.ts` | the pane's identity chain: `TERN_IDENTITY` first, `tern whoami --json` as the fallback |
+| `lib/session.ts` | the 0.9 session verbs: `process`, `rename`, `move`, `pip`, `dock`, `keep-open` (parsed `--json`, injectable runner) |
+| `lib/luau-api.ts` | read `tern.d.luau` and diff it against the `tern.*` / `cx.*` symbols the shipped Luau uses |
+| `lib/host.ts` | resolve the agent binary for spawned panes: `PI_TERN_AGENT` → `PI_TERN_LAUNCHER` → `pi` → `pi-bolt` |
 | `lib/relay.ts` | daemon relay client: one reconnecting connection, `u32LE + JSON` framing, request queue, `hello`/`welcome`, answer unwrap, idle close |
 | `lib/events.ts` | `tern events` stream: line parsing, filters, `waitForEvent` |
 | `lib/state.ts` | persisted state: mirror preference, last pinned diagram, control endpoint |
