@@ -2225,13 +2225,19 @@ export default function piTern(pi: ExtensionAPI) {
 		name: "tern_fleet",
 		label: "Tern fleet",
 		description:
-			"Run work in Tern panes and treat each pane as a thread: spawn (a `pi -p` task, an interactive pi, or any command in a visible pane), list with liveness, send (steer text or keys into a pane), read, wait for exit, stop, prune (close panes whose command exited long ago). Works from anywhere the Tern daemon answers — no pane of your own required.",
+			"Run work in Tern panes and treat each pane as a thread: spawn (a `pi -p` task, an interactive pi, or any command in a visible pane), list with liveness, send (steer text or keys into a pane), read, wait for exit, stop, prune (close panes whose command exited long ago). Works from anywhere the Tern daemon answers — no pane of your own required. `spawn` with `bg: true` runs the task detached instead: the pane closes at once and nothing is kept open, output goes to a log file, and read/wait/stop use that log and the process group — so a resident agent (`claude --bg`, `codex app-server daemon`, `opencode serve`) stays reachable without holding a pane.",
 		parameters: Type.Object({
 			action: Type.String({ description: "spawn|list|send|read|wait|stop|prune" }),
 			task: Type.Optional(Type.String({ description: "spawn: the prompt or task text" })),
 			name: Type.Optional(Type.String({ description: "spawn: short label used in listings and the task file" })),
 			mode: Type.Optional(Type.Union([Type.Literal("print"), Type.Literal("interactive"), Type.Literal("command")])),
 			command: Type.Optional(Type.String({ description: "spawn mode=command: the shell command to run" })),
+			bg: Type.Optional(
+				Type.Boolean({
+					description:
+						"spawn: run detached (`setsid`) with no pane kept — output to a log file, pid recorded, read/wait/stop then use that log and its process group (not mode=interactive)",
+				}),
+			),
 			model: Type.Optional(Type.String({ description: "spawn: model id passed as --model" })),
 			cwd: Type.Optional(Type.String()),
 			worktree: Type.Optional(Type.String({ description: "spawn: run in this worktree directory" })),
@@ -2260,11 +2266,21 @@ export default function piTern(pi: ExtensionAPI) {
 						command: params.command,
 						agentArgs,
 						worktree: params.worktree,
+						bg: params.bg === true,
 					});
 					// `member` already carries `block`; spreading it first and naming `block`
 					// again would overwrite the spread with itself, so name the field once.
 					return asText(
-						JSON.stringify({ ...spawned.member, hint: "tern_fleet read/wait with this block id" }, null, 2),
+						JSON.stringify(
+							{
+								...spawned.member,
+								hint: spawned.member.bg
+									? "detached: tern_fleet read/wait/stop with this block id — there is no pane to keep"
+									: "tern_fleet read/wait with this block id",
+							},
+							null,
+							2,
+						),
 					);
 				}
 				case "list":

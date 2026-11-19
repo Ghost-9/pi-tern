@@ -11,13 +11,21 @@
  *   stop   -> `tern kill BLOCK` / `tern close BLOCK`
  *   prune  -> close panes whose command exited long ago (see fleetPrune)
  *
- * `--keep-open` is deliberate and unconditional: a spawned pane must outlive its command so the
- * output can be read. `prune` is how that stops being a leak.
+ * A member may instead be spawned `bg: true` (detached, "no pane"): the command is started in its
+ * own session with `setsid`, its output goes to a log file and its pid to a pid file, and the pane
+ * is created *without* `--keep-open` so it disappears the instant the wrapper returns. read/wait/
+ * stop then work off the log and the process group, not off a pane — which is what keeps a
+ * resident agent (`claude --bg`, `codex app-server daemon`, `opencode serve`) reachable from a
+ * headless agent without occupying Tern real estate.
+ *
+ * `--keep-open` is deliberate for every pane-backed member: such a pane must outlive its command so
+ * the output can be read, and `prune` is how that stops being a leak. A `bg` member is the one
+ * exception — it has no pane to keep open, and `prune` collects its log instead.
  *
  * No pane is required to *drive* the fleet: these verbs work from a T3-hosted or
  * headless agent as long as the Tern daemon answers.
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { capturePane } from "./ctl.ts";
 import { resolveAgentCommand } from "./host.ts";
@@ -31,6 +39,12 @@ export interface FleetMember {
 	cwd?: string;
 	startedAt: string;
 	taskFile?: string;
+	/** Spawned detached: no pane outlives it, so read/wait/stop go through `logFile` and `pid`. */
+	bg?: boolean;
+	/** bg: the detached shell's pid, which is also the id of its process group. */
+	pid?: number;
+	/** bg: where the detached command's stdout and stderr are appended. */
+	logFile?: string;
 }
 
 interface FleetState {
@@ -67,6 +81,56 @@ export function forgetMember(block: number): FleetState {
 
 function safeName(value: string): string {
 	return value.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "task";
+}
+
+function shQuote(value: string): string {
+	return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Is a detached (`bg`) process still running? `kill(pid, 0)` is the only portable probe: it sends no
+ * signal, and EPERM means "alive but not ours", which still counts as running.
+ */
+export function bgProcessAlive(pid?: number): boolean {
+	if (!pid || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+/** Tail of a detached member's log — its whole transcript, since there is no pane to capture. */
+function bgTail(member: FleetMember, bytes = 200_000): string {
+	if (!member.logFile) return "";
+	try {
+		const text = readFileSync(member.logFile, "utf8");
+		return text.length > bytes ? text.slice(-bytes) : text;
+	} catch {
+		return "";
+	}
+}
+
+/** bg bookkeeping lives in the scratch dir; prune is the only thing that removes it. */
+function removeBgFiles(member: FleetMember): void {
+	for (const file of [member.logFile, member.logFile?.replace(/\.log$/, ".pid"), member.logFile?.replace(/\.log$/, ".sh")]) {
+		if (!file) continue;
+		try {
+			unlinkSync(file);
+		} catch {
+			/* already gone */
+		}
+	}
+}
+
+function findMember(block: number | string): FleetMember | undefined {
+	const id = Number(block);
+	return loadFleet().members.find((member) => member.block === id);
 }
 
 /** Live blocks, so a member whose pane was closed can be reported as gone. */
@@ -110,6 +174,12 @@ export interface FleetSpawnOptions {
 	agentArgs?: string[];
 	worktree?: string;
 	keepOpen?: boolean;
+	/**
+	 * Run detached instead of in a kept pane: `setsid` gives the command its own session, stdout and
+	 * stderr go to a log file, and the pane is not kept — so the work survives the pane with no Tern
+	 * real estate held. `read` tails the log, `wait` polls the pid, `stop` signals its process group.
+	 */
+	bg?: boolean;
 }
 
 export interface FleetSpawnResult {
@@ -143,8 +213,31 @@ export async function fleetSpawn(options: FleetSpawnOptions): Promise<FleetSpawn
 		command = `${[agent, ...extra].join(" ")} -p "$(cat ${JSON.stringify(taskFile)})"`;
 	}
 
+	let logFile: string | undefined;
+	let pidFile: string | undefined;
+	if (options.bg) {
+		if (mode === "interactive") {
+			throw new Error("bg needs mode print or command: an interactive TUI has nothing to detach");
+		}
+		mkdirSync(scratchDir(), { recursive: true });
+		const stamp = `${name}-${Date.now()}`;
+		logFile = path.join(scratchDir(), `fleet-${stamp}.log`);
+		pidFile = path.join(scratchDir(), `fleet-${stamp}.pid`);
+		const script = path.join(scratchDir(), `fleet-${stamp}.sh`);
+		// The wrapper records its own pid (the session and group leader `setsid` creates) so `stop`
+		// can signal the whole process group, then runs the real command as its child.
+		writeFileSync(script, `#!/bin/sh\necho $$ > ${shQuote(pidFile)}\n${command}\n`, { encoding: "utf8", mode: 0o755 });
+		// `setsid --fork` and no trailing `&` on purpose: the pane's shell must stay in the foreground
+		// just long enough to open the log (redirection is the shell's own, so the file exists before
+		// the child is even exec'd) while the *grandchild* ends up in a new session. A bare `cmd &`
+		// loses this race — Tern closes the block the moment the shell exits and reaps the group, so
+		// the child is often killed before it can detach or create the log.
+		command = `setsid --fork sh ${shQuote(script)} > ${shQuote(logFile)} 2>&1 < /dev/null`;
+	}
+
 	const args = ["new", "tab", "--json"];
-	if (options.keepOpen !== false) args.push("--keep-open");
+	// A detached member must not hold a pane: that is the entire point of `bg`.
+	if (options.keepOpen !== false && !options.bg) args.push("--keep-open");
 	const cwd = options.worktree ?? options.cwd;
 	if (cwd) args.push("--cwd", cwd);
 	args.push("--", "sh", "-lc", command);
@@ -160,6 +253,20 @@ export async function fleetSpawn(options: FleetSpawnOptions): Promise<FleetSpawn
 	}
 	if (!block) throw new Error(`could not read the new pane id: ${created.stdout.slice(0, 200)}`);
 
+	let pid: number | undefined;
+	if (options.bg && pidFile) {
+		// The wrapper writes the pid within milliseconds; a short poll beats racing the scheduler.
+		for (let attempt = 0; attempt < 50 && pid === undefined; attempt += 1) {
+			try {
+				const value = Number(readFileSync(pidFile, "utf8").trim());
+				if (Number.isFinite(value) && value > 0) pid = value;
+			} catch {
+				/* not written yet */
+			}
+			if (pid === undefined) await sleep(100);
+		}
+	}
+
 	const member: FleetMember = {
 		block,
 		name,
@@ -168,6 +275,7 @@ export async function fleetSpawn(options: FleetSpawnOptions): Promise<FleetSpawn
 		cwd,
 		startedAt: new Date().toISOString(),
 		taskFile,
+		...(options.bg ? { bg: true, pid, logFile } : {}),
 	};
 	const state = loadFleet();
 	state.members = [...state.members.filter((existing) => existing.block !== block), member];
@@ -199,6 +307,9 @@ export async function fleetRead(
 	block: number | string,
 	flags: { scrollback?: boolean; ansi?: boolean } = {},
 ): Promise<string> {
+	// A detached member has no pane to capture; its log file is the transcript.
+	const member = findMember(block);
+	if (member?.bg) return bgTail(member);
 	return capturePane(String(block), { scrollback: flags.scrollback !== false, ansi: flags.ansi === true });
 }
 
@@ -212,6 +323,16 @@ export async function fleetWait(
 	block: number | string,
 	timeoutSeconds = 300,
 ): Promise<FleetWaitResult> {
+	const member = findMember(block);
+	if (member?.bg) {
+		const deadline = Date.now() + Math.max(1, timeoutSeconds) * 1000;
+		let alive = bgProcessAlive(member.pid);
+		while (alive && Date.now() < deadline) {
+			await sleep(250);
+			alive = bgProcessAlive(member.pid);
+		}
+		return { exited: !alive, timedOut: alive, output: bgTail(member) };
+	}
 	const waited = await runTern(
 		["wait", String(block), "--until", "exit", "--timeout", String(Math.max(1, timeoutSeconds))],
 		(timeoutSeconds + 15) * 1000,
@@ -226,6 +347,28 @@ export async function fleetWait(
 }
 
 export async function fleetStop(block: number | string, options: { close?: boolean } = {}): Promise<string> {
+	const member = findMember(block);
+	if (member?.bg) {
+		let signal = "no live process";
+		if (bgProcessAlive(member.pid)) {
+			try {
+				// Negative pid targets the whole group, so a shell's children go too.
+				process.kill(-Number(member.pid), "SIGTERM");
+				signal = "SIGTERM to its process group";
+			} catch {
+				try {
+					process.kill(Number(member.pid), "SIGTERM");
+					signal = "SIGTERM to the process";
+				} catch {
+					/* exited between the probe and the signal */
+				}
+			}
+		}
+		// The pane is normally already gone; closing it is a no-op when it is.
+		if (options.close !== false) await runTern(["close", String(block)], 15000).catch(() => undefined);
+		forgetMember(Number(block));
+		return `detached ${member.pid ?? "?"}: ${signal} · no pane kept`;
+	}
 	const killed = await runTern(["kill", String(block)], 15000);
 	if (killed.code !== 0 && !options.close) {
 		// A finished command has no live process; removing the block is still valid.
@@ -306,6 +449,29 @@ export async function fleetPrune(
 			keep("protected: this is the pane you are running in");
 			continue;
 		}
+		if (member.bg) {
+			// Detached members are judged by their pid: there is no pane to leave open, and holding
+			// their record would only leak a log file.
+			if (bgProcessAlive(member.pid)) {
+				keep("live: its detached process is still running");
+				continue;
+			}
+			if (ageMs < minAgeMs) {
+				keep(`too young: ${ageMinutes}m old, needs ${Math.round(minAgeMs / 60_000)}m`);
+				continue;
+			}
+			if (!options.dryRun) {
+				forgetMember(member.block);
+				removeBgFiles(member);
+			}
+			result.pruned.push({
+				block: member.block,
+				name: member.name,
+				ageMinutes,
+				reason: `detached process exited ${ageMinutes}m ago, over the ${Math.round(minAgeMs / 60_000)}m idle floor`,
+			});
+			continue;
+		}
 		if (live.has(member.block)) {
 			// Still running. A long build or a dev server is exactly what keep-open is for.
 			keep("live: its command is still running");
@@ -354,8 +520,14 @@ export async function fleetStatus(options: { read?: boolean; tailLines?: number 
 	const live = await liveBlocks();
 	const out: FleetStatus[] = [];
 	for (const member of state.members) {
-		const entry: FleetStatus = { ...member, live: live.has(member.block) };
-		if (options.read && entry.live) {
+		// A detached member's pane is expected to be gone; its pid says whether it is alive.
+		const entry: FleetStatus = { ...member, live: member.bg ? bgProcessAlive(member.pid) : live.has(member.block) };
+		if (options.read && member.bg) {
+			const text = bgTail(member);
+			const lines = text.split("\n").filter((line) => line.trim());
+			entry.tail = lines.slice(-(options.tailLines ?? 6)).join("\n");
+		}
+		if (options.read && !member.bg && entry.live) {
 			try {
 				const text = await fleetRead(member.block);
 				const lines = text.split("\n").filter((line) => line.trim());

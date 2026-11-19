@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### `tern_fleet` gains `bg: true` — a member that holds no pane
+
+`spawn` can now run its task **detached**. The pane is created without `--keep-open` and disappears
+the instant the command is handed to `setsid --fork`, so a resident agent (`claude --bg`,
+`codex app-server daemon`, `opencode serve` — anything that outlives its launcher) can be started from
+a headless pi without occupying Tern real estate.
+
+The pane used to be the only source of truth; a detached member has three substitutes, recorded in
+`fleet.json` alongside the block id:
+
+- **output** → `logFile`, the command's stdout and stderr, so `read` and `list --read` tail the log;
+- **liveness** → `pid`, probed with `kill(pid, 0)`, so `wait` polls the process instead of a pane and
+  `list` reports `live` from the pid;
+- **stopping** → the pid is a session and process-group leader, so `stop` signals `-pid` and takes the
+  command's children with it (there is no pane left to `close`).
+
+`prune` extended its contract rather than weakening it: an exited detached member is dropped (record,
+log and pid file) on the same 30-minute floor, and a running one is kept with that reason.
+
+Two failure modes found while building it, both now covered by `test/fleet-bg.test.ts`:
+
+- `cmd &` in a pane does **not** detach: Tern reaps the group when the shell exits, and the child
+  usually dies before it can `setsid` or open its log. The wrapper therefore stays in the foreground
+  until the fork is complete (`setsid --fork sh … < /dev/null`), which also means the log file exists
+  before anything can race it.
+- `mode: "interactive"` with `bg` is refused, not silently downgraded: a TUI with no terminal to
+  attach to is not a background thread.
+
 ## 1.2.0 - 2026-10-31
 
 **pi-tern targeted Tern 0.5.x; the Tern on this machine is 0.9.8.** This release closes that gap with
