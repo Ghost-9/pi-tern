@@ -2225,13 +2225,19 @@ export default function piTern(pi: ExtensionAPI) {
 		name: "tern_fleet",
 		label: "Tern fleet",
 		description:
-			"Run work in Tern panes and treat each pane as a thread: spawn (a `pi -p` task, an interactive pi, or any command in a visible pane), list with liveness, send (steer text or keys into a pane), read, wait for exit, stop, prune (close panes whose command exited long ago). Works from anywhere the Tern daemon answers — no pane of your own required.",
+			"Run work in Tern panes and treat each pane as a thread: spawn (a `pi -p` task, an interactive pi, or any command in a visible pane; a print or command pane closes as soon as its program exits, an interactive one stays), list with liveness, send (steer text or keys into a pane), read, wait for exit, stop, prune (close panes whose command exited long ago). Works from anywhere the Tern daemon answers — no pane of your own required.",
 		parameters: Type.Object({
 			action: Type.String({ description: "spawn|list|send|read|wait|stop|prune" }),
 			task: Type.Optional(Type.String({ description: "spawn: the prompt or task text" })),
 			name: Type.Optional(Type.String({ description: "spawn: short label used in listings and the task file" })),
 			mode: Type.Optional(Type.Union([Type.Literal("print"), Type.Literal("interactive"), Type.Literal("command")])),
 			command: Type.Optional(Type.String({ description: "spawn mode=command: the shell command to run" })),
+			keepOpen: Type.Optional(
+				Type.Boolean({
+					description:
+						"spawn: keep the pane after its program exits (default false for mode=print and mode=command, true for mode=interactive)",
+				}),
+			),
 			model: Type.Optional(Type.String({ description: "spawn: model id passed as --model" })),
 			cwd: Type.Optional(Type.String()),
 			worktree: Type.Optional(Type.String({ description: "spawn: run in this worktree directory" })),
@@ -2260,6 +2266,7 @@ export default function piTern(pi: ExtensionAPI) {
 						command: params.command,
 						agentArgs,
 						worktree: params.worktree,
+						keepOpen: params.keepOpen,
 					});
 					// `member` already carries `block`; spreading it first and naming `block`
 					// again would overwrite the spread with itself, so name the field once.
@@ -2287,8 +2294,8 @@ export default function piTern(pi: ExtensionAPI) {
 					return asText(await fleetStop(params.block));
 				}
 				case "prune": {
-					// Panes are spawned with --keep-open so a finished task's output survives to be
-					// read; without a cleanup path they accumulate for the lifetime of the daemon.
+					// A pane kept with keepOpen survives its command so the output can still be read;
+					// without a cleanup path those accumulate for the lifetime of the daemon.
 					// `dryRun` first is the safe habit, and it reports why each pane was kept.
 					const pruned = await fleetPrune({
 						minAgeMs: params.minAgeMinutes === undefined ? undefined : params.minAgeMinutes * 60_000,
