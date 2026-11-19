@@ -4,15 +4,17 @@
  * A "thread" here is a Tern pane running an agent or a command, addressed by its
  * block id. The transport is all first-party Tern CLI:
  *
- *   spawn  -> `tern new tab --json --keep-open [--cwd X] -- <cmd>`
+ *   spawn  -> `tern new tab --json [--keep-open] [--cwd X] -- <cmd>`
  *   steer  -> `tern send BLOCK text "..."` + `tern send BLOCK keys Enter`
  *   read   -> `tern capture BLOCK [--scrollback]`
  *   wait   -> `tern wait BLOCK --until exit --timeout N`
  *   stop   -> `tern kill BLOCK` / `tern close BLOCK`
  *   prune  -> close panes whose command exited long ago (see fleetPrune)
  *
- * `--keep-open` is deliberate and unconditional: a spawned pane must outlive its command so the
- * output can be read. `prune` is how that stops being a leak.
+ * `--keep-open` is passed only where the pane has to outlive its program: an `interactive` session,
+ * whose pane *is* the session, or an explicit `keepOpen: true`. A `print` or `command` member is a
+ * one-shot job, so its pane closes the moment the program exits. `prune` remains for the members
+ * that were deliberately kept.
  *
  * No pane is required to *drive* the fleet: these verbs work from a T3-hosted or
  * headless agent as long as the Tern daemon answers.
@@ -109,7 +111,26 @@ export interface FleetSpawnOptions {
 	/** Extra argv for the agent, e.g. ["--model", "opencode-go/deepseek-v4.1-flash"]. */
 	agentArgs?: string[];
 	worktree?: string;
+	/**
+	 * Keep the pane after its program exits. Defaults to true for `interactive` only: a TUI pane is
+	 * the session, while a `print` or `command` pane is a one-shot job that should close on exit.
+	 */
 	keepOpen?: boolean;
+}
+
+/**
+ * The `tern new tab` argv for a member.
+ *
+ * `--keep-open` is the only policy choice here, and it is the caller's: a kept pane outlives its
+ * program, a pane without the flag closes the moment the program exits. Exported so the policy can
+ * be asserted without a running daemon.
+ */
+export function spawnArgs(options: { keepOpen: boolean; cwd?: string; command: string }): string[] {
+	const args = ["new", "tab", "--json"];
+	if (options.keepOpen) args.push("--keep-open");
+	if (options.cwd) args.push("--cwd", options.cwd);
+	args.push("--", "sh", "-lc", options.command);
+	return args;
 }
 
 export interface FleetSpawnResult {
@@ -143,11 +164,12 @@ export async function fleetSpawn(options: FleetSpawnOptions): Promise<FleetSpawn
 		command = `${[agent, ...extra].join(" ")} -p "$(cat ${JSON.stringify(taskFile)})"`;
 	}
 
-	const args = ["new", "tab", "--json"];
-	if (options.keepOpen !== false) args.push("--keep-open");
 	const cwd = options.worktree ?? options.cwd;
-	if (cwd) args.push("--cwd", cwd);
-	args.push("--", "sh", "-lc", command);
+	const args = spawnArgs({
+		keepOpen: options.keepOpen ?? mode === "interactive",
+		cwd,
+		command,
+	});
 	const created = await runTern(args, 20000);
 	if (created.code !== 0) {
 		throw new Error(created.stderr.trim() || created.stdout.trim() || `tern new tab exited ${created.code}`);
@@ -242,14 +264,11 @@ export async function fleetStop(block: number | string, options: { close?: boole
 /**
  * How long a dead fleet pane may linger before `prune` will close it.
  *
- * `--keep-open` is unconditional because a spawned agent pane must not vanish the moment its command
- * exits: you want to read what it printed, and a `pi -p` task that finished in 3 seconds should not
- * take its output with it. The cost is that panes accumulate for the lifetime of the Tern daemon,
- * which survives app updates by design — so a leak that only a daemon restart clears.
- *
- * Hence a real cleanup path, with a floor that respects the reason above.
+ * A pane is kept only when the caller asked for it, or when the mode is `interactive` and the pane
+ * is the session. A print or command pane closes when its program exits, so nothing accumulates.
+ * The kept ones still need a cleanup path, which is what the floor below is.
  */
-export const FLEET_PANES_KEEP_OPEN = true;
+export const FLEET_PANES_KEEP_OPEN = false;
 
 /** Default minimum age before a dead pane is eligible for pruning: 30 minutes. */
 export const DEFAULT_PRUNE_MIN_AGE_MS = 30 * 60_000;

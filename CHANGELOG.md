@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### `tern_fleet` closes the pane of a one-shot member
+
+A `print` or `command` member used to leave its pane behind, kept open by `--keep-open` so the output
+could still be read. On a long-lived Tern daemon those dead blocks accumulated, which is why `prune`
+and its 30 minute floor existed. The pane now closes when the program exits, which is what a one-shot
+job should do.
+
+`keepOpen: true` brings back the old behaviour for a member whose output should outlive its exit, and
+`mode: "interactive"` still keeps its pane by default, because there the pane is the session.
+`FLEET_PANES_KEEP_OPEN` is now `false`. `prune` stays for the panes that are deliberately kept.
+
 ## 1.2.0 - 2026-10-31
 
 **pi-tern targeted Tern 0.5.x; the Tern on this machine is 0.9.8.** This release closes that gap with
