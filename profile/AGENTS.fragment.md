@@ -24,7 +24,10 @@ When a Tern daemon is reachable — `/tern capabilities` confirms it, or
   server inside `bash` when a visible pane is one call away. `tern_watch --expect`
   waits for a pattern instead of polling.
 - **Parallel work → `tern_fleet`.** A pane is a thread: `spawn` (a `pi -p` task, an
-  interactive pi, or any command), `read`, `send` to steer, `wait`, `stop`.
+  interactive pi, or any command), `read`, `send` to steer, `wait`, `stop`. Add
+  `bg: true` for a resident agent that should not hold a pane (`claude --bg`,
+  `codex app-server daemon`, `opencode serve`): it is run detached, and `read`,
+  `wait` and `stop` then go through its log file and its process group.
 - **Isolated branches → `tern_worktree`** (pure git), then `tern_fleet spawn` with
   `worktree` set. One writer per worktree.
 - **Pull requests → `tern_pr`.** Ask for `summary` first: it collapses checks into
